@@ -43,6 +43,21 @@ async function createSliceRepairPatch(dataUrl, placement) {
   };
 }
 
+function getExpandedSampleRect(source, placement, padding = 16) {
+  const sourceWidth = Math.max(1, Math.round(Number(source?.naturalWidth || source?.width) || 1));
+  const sourceHeight = Math.max(1, Math.round(Number(source?.naturalHeight || source?.height) || 1));
+  const left = Math.max(0, Math.round(Number(placement?.x) || 0) - padding);
+  const top = Math.max(0, Math.round(Number(placement?.y) || 0) - padding);
+  const right = Math.min(sourceWidth, Math.round((Number(placement?.x) || 0) + (Number(placement?.width) || 0)) + padding);
+  const bottom = Math.min(sourceHeight, Math.round((Number(placement?.y) || 0) + (Number(placement?.height) || 0)) + padding);
+  return {
+    x: left,
+    y: top,
+    width: Math.max(1, right - left),
+    height: Math.max(1, bottom - top)
+  };
+}
+
 function sampleImmediatePlacementEdgeStats(source, placement) {
   const naturalWidth = source.naturalWidth || source.width;
   const naturalHeight = source.naturalHeight || source.height;
@@ -138,6 +153,7 @@ if (typeof module !== "undefined") {
   module.exports = {
     collectRectColors,
     createSliceRepairPatch,
+    getExpandedSampleRect,
     paintEdgeBlendRepairPatch,
     sampleImmediatePlacementEdgeStats
   };

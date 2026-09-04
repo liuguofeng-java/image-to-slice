@@ -233,6 +233,21 @@ test("AI decomposition is the single entry for ordinary slices and background re
   );
 });
 
+test("slice canvas exposes persistent selection and continuous nested drawing modes", () => {
+  const appSource = fs.readFileSync("src/ui/app.js", "utf8");
+  const template = fs.readFileSync("src/ui/ui.template.html", "utf8");
+
+  assert.match(template, /data-slice-tool="select"/);
+  assert.match(template, /data-slice-tool="draw"/);
+  assert.match(template, /id="sliceTypePopover"/);
+  assert.match(template, /data-slice-content-type="background"/);
+  assert.match(template, /data-slice-content-type="image"/);
+  assert.match(template, /data-slice-content-type="text"/);
+  assert.match(appSource, /if \(sliceCanvasTool === "draw"\)[\s\S]*sliceDraft =/);
+  assert.match(appSource, /fetchBackend\("\/api\/design\/recognize-region"/);
+  assert.match(appSource, /contentType: "unclassified"/);
+});
+
 test("slice canvas fit uses an explicit scroll sizer and centered controller placement", () => {
   const appSource = fs.readFileSync("src/ui/app.js", "utf8");
   const styles = fs.readFileSync("src/ui/styles.css", "utf8");
@@ -822,6 +837,16 @@ test("AI transparent applies local edge removal after a provider compatibility f
   const transparentSource = appSource.match(/async function makeSliceAiTransparent\([\s\S]*?\n      \}/)?.[0] || "";
 
   assert.match(transparentSource, /result\.requiresLocalTransparency\s*\?\s*await removeEdgeBackground\(image\.dataUrl\)/);
+});
+
+test("AI transparent removes direct child regions before exporting a composite parent", () => {
+  const appSource = fs.readFileSync("src/ui/app.js", "utf8");
+  const transparentSource = appSource.match(/async function makeSliceAiTransparent\([\s\S]*?\n      \}/)?.[0] || "";
+
+  assert.match(transparentSource, /getDirectChildRemovalRegions\(asset, allAssets\)/);
+  assert.match(transparentSource, /buildCompositeParentCleanupPrompt\(asset, childRegions\)/);
+  assert.match(transparentSource, /compositeAiInpaintResult/);
+  assert.match(transparentSource, /aiTransparentChildSignature = childSignature/);
 });
 
 test("editable preview failures stay raw and only appear in the loading dialog", () => {

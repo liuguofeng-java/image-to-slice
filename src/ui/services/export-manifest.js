@@ -13,14 +13,19 @@ function buildSliceExportManifest({
   const usedNames = new Set();
   const assets = activeImage.sliceManifest.assets.map((asset) => {
     const basename = exportManifestReserveSliceAssetName(asset.name, usedNames);
-    const filename = `assets/${basename}.png`;
+    const contentType = String(asset.contentType || "image");
+    const isText = contentType === "text";
+    const filename = isText ? null : `assets/${basename}.png`;
     return {
       id: asset.id,
       name: basename,
       filename,
-      svgFilename: asset.svgData ? filename.replace(/\.png$/, ".svg") : null,
-      format: "png",
-      formats: asset.svgData ? ["png", "svg"] : ["png"],
+      svgFilename: !isText && asset.svgData ? filename.replace(/\.png$/, ".svg") : null,
+      format: isText ? "text" : "png",
+      formats: isText ? ["text"] : (asset.svgData ? ["png", "svg"] : ["png"]),
+      contentType,
+      parentId: asset.parentId || null,
+      ...(isText ? { text: { ...(asset.text || {}) } } : {}),
       transparent: Boolean(asset.transparent),
       aiTransparent: Boolean(asset.aiTransparent),
       aiRedrawn: Boolean(asset.aiRedrawn),
@@ -34,7 +39,7 @@ function buildSliceExportManifest({
     };
   });
   return {
-    version: "1.0.0",
+    version: "1.1.0",
     exportedAt: new Date().toISOString(),
     sourcePrompt: manifest.sourcePrompt || "",
     selectedImageIndex: imageIndex,

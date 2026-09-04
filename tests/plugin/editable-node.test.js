@@ -122,6 +122,42 @@ test("createEditableNode ignores non-numeric letter spacing and accepts pixel va
   assert.equal(loadedFonts.length, 2);
 });
 
+test("createEditableNode maps editable text alignment, stroke, shadow, and font hint", async () => {
+  const text = createResizableNode("TEXT");
+  const attempts = [];
+  const figmaApi = {
+    createText: () => text,
+    loadFontAsync: async (font) => {
+      attempts.push(font);
+      if (font.family !== "Brand Sans") throw new Error("missing");
+    }
+  };
+  const node = await createEditableNode({
+    figmaApi,
+    definition: {
+      type: "text",
+      text: "鞋子",
+      fontFamily: "Brand Sans",
+      fontWeight: 700,
+      fontSize: 20,
+      lineHeight: 26,
+      textAlignHorizontal: "CENTER",
+      strokeColor: "#000000",
+      strokeWidth: 1.5,
+      shadow: { color: "#112233", opacity: 0.4, x: 1, y: 2, blur: 5 },
+      width: 80,
+      height: 30
+    }
+  });
+
+  assert.equal(attempts[0].family, "Brand Sans");
+  assert.equal(node.fontName.family, "Brand Sans");
+  assert.equal(node.textAlignHorizontal, "CENTER");
+  assert.equal(node.strokeWeight, 1.5);
+  assert.equal(node.effects[0].type, "DROP_SHADOW");
+  assert.equal(node.effects[0].color.a, 0.4);
+});
+
 test("createEditableNode creates frames with nested children", async () => {
   const frame = createResizableNode("FRAME");
   const child = createResizableNode("RECTANGLE");

@@ -121,6 +121,11 @@
                 <button id="repairPreview" class="cut-batch" type="button" disabled>预览补齐</button>
               </div>
             </div>
+            <div id="sliceToolMode" class="slice-tool-mode" role="group" aria-label="切图画布工具">
+              <button class="active" type="button" data-slice-tool="select" aria-pressed="true">选择</button>
+              <button type="button" data-slice-tool="draw" aria-pressed="false">连续框选</button>
+              <span id="sliceToolHint">选择、移动或调整已有图层</span>
+            </div>
             <div id="cutGrid" class="cut-grid"></div>
           </section>
 
@@ -207,6 +212,15 @@
         </div>
         <div id="sliceSettingsBody" class="slice-settings-body"></div>
       </aside>
+      <div id="sliceTypePopover" class="slice-type-popover" role="dialog" aria-modal="false" aria-label="选择图层类型" hidden>
+        <strong>这个区域是什么？</strong>
+        <div class="slice-type-actions">
+          <button type="button" data-slice-content-type="background">背景</button>
+          <button type="button" data-slice-content-type="image">图片</button>
+          <button type="button" data-slice-content-type="text">文字</button>
+        </div>
+        <small>稍后仍可在设置中修改</small>
+      </div>
       <div id="sliceImagePreview" class="slice-image-preview" aria-hidden="true" aria-label="切图编辑器">
         <section class="slice-image-editor" role="dialog" aria-modal="true" aria-label="编辑切图">
           <div class="slice-image-editor-viewport">

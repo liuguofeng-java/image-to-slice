@@ -59,6 +59,51 @@ test("fast capture authoritative assets preserve independent corner radii", () =
   assert.deepEqual(node.radii, radii);
 });
 
+test("fast capture creates fixed editable text anchors in the same semantic group as their background", () => {
+  const background = createFastAuthoritativeAssetNode({
+    id: "tile",
+    name: "shoe_tile",
+    contentType: "background",
+    dataUrl: "data:image/png;base64,TILE",
+    placement: { x: 0, y: 0, width: 100, height: 100 }
+  });
+  const text = createFastAuthoritativeAssetNode({
+    id: "label",
+    name: "shoe_label",
+    contentType: "text",
+    parentId: "tile",
+    placement: { x: 20, y: 65, width: 60, height: 24 },
+    text: { characters: "鞋子", fontSize: 18, lineHeight: 22, color: "#FFFFFF" }
+  });
+
+  assert.equal(background.semanticGroupId, "tile");
+  assert.equal(text.semanticGroupId, "tile");
+  assert.equal(text.type, "text");
+  assert.equal(text.text, "鞋子");
+});
+
+test("fast capture groups an image parent with its editable text child", () => {
+  const imageParent = createFastAuthoritativeAssetNode({
+    id: "tile",
+    name: "shoe_tile",
+    contentType: "image",
+    hasChildren: true,
+    dataUrl: "data:image/png;base64,TILE",
+    placement: { x: 0, y: 0, width: 100, height: 100 }
+  });
+  const text = createFastAuthoritativeAssetNode({
+    id: "label",
+    name: "shoe_label",
+    contentType: "text",
+    parentId: "tile",
+    placement: { x: 20, y: 65, width: 60, height: 24 },
+    text: { characters: "鞋子" }
+  });
+
+  assert.equal(imageParent.semanticGroupId, "tile");
+  assert.equal(text.semanticGroupId, "tile");
+});
+
 test("fast capture locks a flex screen to the dynamic source dimensions", () => {
   const declarations = new Map();
   const screenElement = {

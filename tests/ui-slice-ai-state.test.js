@@ -117,6 +117,25 @@ test("restoring transparency also restores the AI background processing state", 
   assert.equal("transparencyRestoreState" in asset, false);
 });
 
+test("restoring parent transparency clears the child cleanup signature", () => {
+  const asset = {
+    dataUrl: "data:image/png;base64,PARENT",
+    backgroundCleanupStatus: "pending"
+  };
+  asset.transparencyRestoreState = createSliceTransparencyRestoreState(asset);
+  asset.dataUrl = "data:image/png;base64,CLEAN_PARENT";
+  asset.aiTransparent = true;
+  asset.transparent = true;
+  asset.aiTransparentChildSignature = "label:1:2:3:4";
+  asset.aiTransparentExcludedChildCount = 1;
+  asset.backgroundCleanupStatus = "clean";
+
+  assert.equal(restoreSliceTransparencyState(asset), true);
+  assert.equal(asset.backgroundCleanupStatus, "pending");
+  assert.equal("aiTransparentChildSignature" in asset, false);
+  assert.equal("aiTransparentExcludedChildCount" in asset, false);
+});
+
 test("applying transparency suspends SVG without losing an AI-completed background", () => {
   const asset = {
     dataUrl: "data:image/png;base64,AI_COMPLETE",

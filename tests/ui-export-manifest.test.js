@@ -58,10 +58,10 @@ test("buildSliceExportManifest preserves legacy asset export shape", () => {
     getSliceRadius: (asset) => asset.radius
   });
 
-  assert.equal(result.version, "1.0.0");
+  assert.equal(result.version, "1.1.0");
   assert.match(result.exportedAt, /^\d{4}-\d{2}-\d{2}T/);
   assert.deepEqual({ ...result, exportedAt: "DATE" }, {
-    version: "1.0.0",
+    version: "1.1.0",
     exportedAt: "DATE",
     sourcePrompt: "Prompt",
     selectedImageIndex: 2,
@@ -77,6 +77,8 @@ test("buildSliceExportManifest preserves legacy asset export shape", () => {
       svgFilename: "assets/icon_user_avatar.svg",
       format: "png",
       formats: ["png", "svg"],
+      contentType: "image",
+      parentId: null,
       transparent: true,
       aiTransparent: true,
       aiRedrawn: false,
@@ -86,6 +88,40 @@ test("buildSliceExportManifest preserves legacy asset export shape", () => {
       placement: { x: 1, y: 2, width: 30, height: 40 }
     }]
   });
+});
+
+test("buildSliceExportManifest stores editable text and hierarchy without a bitmap", () => {
+  const text = {
+    characters: "鞋子",
+    fontFamily: "Microsoft YaHei",
+    fontWeight: 700,
+    fontSize: 24,
+    lineHeight: 30,
+    letterSpacing: 1,
+    color: "#FFFFFF",
+    textAlignHorizontal: "CENTER",
+    strokeColor: "#000000",
+    strokeWidth: 1,
+    shadow: { color: "#000000", opacity: 0.4, x: 0, y: 2, blur: 4 }
+  };
+  const result = buildSliceExportManifest({
+    manifest: { screen: { name: "Screen", width: 100, height: 100 } },
+    activeImage: { sliceManifest: { assets: [{
+      id: "label",
+      name: "shoe_label",
+      contentType: "text",
+      parentId: "tile",
+      text,
+      placement: { x: 20, y: 60, width: 60, height: 30 }
+    }] } },
+    imageIndex: 0,
+    getSliceRadius: () => 0
+  });
+
+  assert.equal(result.assets[0].filename, null);
+  assert.equal(result.assets[0].format, "text");
+  assert.equal(result.assets[0].parentId, "tile");
+  assert.deepEqual(result.assets[0].text, text);
 });
 
 test("buildSliceExportManifest includes both ordinary AI inpaint results", () => {

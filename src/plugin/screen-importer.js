@@ -36,25 +36,44 @@ async function createUiAssetScreen({ figmaApi, atob, notifyRecoverableError, man
     preview.locked = true;
     frame.appendChild(preview);
 
-    const selectedAssets = manifest.assets.filter((asset) => asset.selected !== false);
+    const selectedAssets = manifest.assets.filter((asset) => asset.selected !== false && asset.contentType !== "unclassified");
+    const createdAssetNodes = new Map();
     for (const asset of selectedAssets) {
-      const node = await createAssetNode({
-        figmaApi,
-        atob,
-        notifyRecoverableError,
-        asset
-      });
+      const node = asset.contentType === "text"
+        ? await createEditableNode({
+            figmaApi,
+            atob,
+            definition: createTextDefinitionFromAsset(asset)
+          })
+        : await createAssetNode({
+            figmaApi,
+            atob,
+            notifyRecoverableError,
+            asset
+          });
+      if (
+        asset.contentType === "text"
+        && asset.text?.fontFamily
+        && node.fontName?.family
+        && node.fontName.family !== asset.text.fontFamily
+      ) {
+        figmaApi.notify?.(`文字“${asset.name}”未找到字体 ${asset.text.fontFamily}，已回退为 ${node.fontName.family}`);
+      }
       node.x = asset.placement.x;
       node.y = asset.placement.y;
-      const useSvgExport = Boolean(asset.svgData && node.type !== "RECTANGLE");
-      node.exportSettings = [
-        useSvgExport
-          ? { format: "SVG" }
-          : { format: "PNG", constraint: { type: "SCALE", value: 1 } }
-      ];
+      if (asset.contentType !== "text") {
+        const useSvgExport = Boolean(asset.svgData && node.type !== "RECTANGLE");
+        node.exportSettings = [
+          useSvgExport
+            ? { format: "SVG" }
+            : { format: "PNG", constraint: { type: "SCALE", value: 1 } }
+        ];
+      }
       node.setPluginData("assetManifest", JSON.stringify(createPluginDataAssetManifest(asset)));
       frame.appendChild(node);
+      createdAssetNodes.set(asset.id, node);
     }
+    groupCompositeAssetNodes({ figmaApi, frame, assets: selectedAssets, createdAssetNodes });
 
     figmaApi.currentPage.selection = [frame];
     figmaApi.viewport.scrollAndZoomIntoView([frame]);
@@ -62,6 +81,63 @@ async function createUiAssetScreen({ figmaApi, atob, notifyRecoverableError, man
     if (!frame.removed) frame.remove();
     throw error;
   }
+}
+
+function createTextDefinitionFromAsset(asset) {
+  const text = asset.text || {};
+  return {
+    type: "text",
+    name: asset.name || "editable_text",
+    x: asset.placement.x,
+    y: asset.placement.y,
+    width: asset.placement.width,
+    height: asset.placement.height,
+    text: String(text.characters || ""),
+    fontFamily: text.fontFamily,
+    fontWeight: text.fontWeight,
+    fontSize: text.fontSize,
+    lineHeight: text.lineHeight,
+    letterSpacing: text.letterSpacing,
+    color: text.color,
+    textAlignHorizontal: text.textAlignHorizontal,
+    strokeColor: text.strokeColor,
+    strokeWidth: text.strokeWidth,
+    shadow: text.shadow
+  };
+}
+
+function groupCompositeAssetNodes({ figmaApi, frame, assets, createdAssetNodes }) {
+  if (typeof figmaApi.group !== "function") return [];
+  const byParent = new Map();
+  for (const asset of assets) {
+    if (!asset.parentId || !createdAssetNodes.has(asset.parentId)) continue;
+    if (!byParent.has(asset.parentId)) byParent.set(asset.parentId, []);
+    byParent.get(asset.parentId).push(asset.id);
+  }
+  const depth = (asset) => {
+    let value = 0;
+    let cursor = asset;
+    const byId = new Map(assets.map((entry) => [entry.id, entry]));
+    while (cursor?.parentId && byId.has(cursor.parentId) && value < assets.length) {
+      value += 1;
+      cursor = byId.get(cursor.parentId);
+    }
+    return value;
+  };
+  const groups = [];
+  [...byParent.keys()]
+    .sort((left, right) => depth(assets.find((asset) => asset.id === right)) - depth(assets.find((asset) => asset.id === left)))
+    .forEach((parentId) => {
+      const parentNode = createdAssetNodes.get(parentId);
+      const childNodes = byParent.get(parentId).map((id) => createdAssetNodes.get(id)).filter(Boolean);
+      if (!parentNode || childNodes.length === 0) return;
+      const group = figmaApi.group([parentNode, ...childNodes], frame);
+      const parentAsset = assets.find((asset) => asset.id === parentId);
+      group.name = `${parentAsset?.name || parentId}_group`;
+      createdAssetNodes.set(parentId, group);
+      groups.push(group);
+    });
+  return groups;
 }
 
 async function createEditableDesignScreen({
@@ -196,7 +272,9 @@ function findImportPosition(figmaApi, width, height) {
 }
 
 module.exports = {
+  createTextDefinitionFromAsset,
   createUiAssetScreen,
   createEditableDesignScreen,
-  findImportPosition
+  findImportPosition,
+  groupCompositeAssetNodes
 };

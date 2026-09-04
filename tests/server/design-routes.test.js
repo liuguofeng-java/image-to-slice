@@ -31,6 +31,10 @@ function createHarness({ payload = {} } = {}) {
       operations.push({ name: "planBackgroundDecomposition", payload: nextPayload, context: nextContext });
       return { ok: true, assets: [], backgrounds: [] };
     },
+    recognizeTextRegion: async (nextPayload, nextContext) => {
+      operations.push({ name: "recognizeTextRegion", payload: nextPayload, context: nextContext });
+      return { text: { characters: "鞋子" }, confidence: 0.95, warning: "" };
+    },
     reconstructEditableDesignH5: async (nextPayload, nextContext) => {
       operations.push({ name: "reconstructEditableDesignH5", payload: nextPayload, context: nextContext });
       return { ok: true, kind: "h5" };
@@ -121,6 +125,17 @@ test("POST /api/design/plan-background-decomposition plans covered backgrounds",
   });
   assert.equal(harness.progressCalls[0].message, "正在 AI 拆分普通切图和可还原背景");
   assert.deepEqual(harness.sent[0].body, { ok: true, assets: [], backgrounds: [] });
+});
+
+test("POST /api/design/recognize-region recognizes editable text with vision progress", async () => {
+  const payload = { imageDataUrl: "data:image/png;base64,abc", width: 100, height: 100, region: { x: 10, y: 10, width: 40, height: 20 } };
+  const harness = createHarness({ payload });
+
+  assert.equal(await harness.handle({ method: "POST", url: "/api/design/recognize-region" }, {}), true);
+  assert.deepEqual(harness.taskCalls, ["vision"]);
+  assert.equal(harness.operations[0].name, "recognizeTextRegion");
+  assert.equal(harness.progressCalls[0].message, "正在识别选区文字和样式");
+  assert.equal(harness.sent[0].body.text.characters, "鞋子");
 });
 
 test("POST /api/design/reconstruct-h5 runs with progress", async () => {

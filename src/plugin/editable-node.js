@@ -89,7 +89,12 @@ async function createEditableImage({ figmaApi, atob, definition }) {
 
 async function createEditableText({ figmaApi, definition }) {
   const fontStyle = fontStyleFromWeight(definition.fontWeight);
-  const fontName = await loadPreferredTextFont(String(definition.text || ""), fontStyle, (font) => figmaApi.loadFontAsync(font));
+  const fontName = await loadPreferredTextFont(
+    String(definition.text || ""),
+    fontStyle,
+    (font) => figmaApi.loadFontAsync(font),
+    definition.fontFamily
+  );
 
   const text = figmaApi.createText();
   applyBaseNodeProperties(text, definition);
@@ -98,6 +103,15 @@ async function createEditableText({ figmaApi, definition }) {
   text.fontSize = clampNumber(Number(definition.fontSize), 8, 160, 16);
   text.lineHeight = { unit: "PIXELS", value: clampNumber(Number(definition.lineHeight), text.fontSize, 240, Math.round(text.fontSize * 1.25)) };
   text.fills = [hexToSolidPaint(definition.color || "#111318", definition.opacity)];
+  if (Number(definition.strokeWidth) > 0) {
+    text.strokes = [hexToSolidPaint(definition.strokeColor || "#000000", definition.strokeOpacity)];
+    text.strokeWeight = clampEditableTextFloat(definition.strokeWidth, 0, 24, 0);
+  }
+  if (definition.shadow) text.effects = [createDropShadow(definition.shadow)];
+  const textAlignHorizontal = String(definition.textAlignHorizontal || "").toUpperCase();
+  if (["LEFT", "CENTER", "RIGHT", "JUSTIFIED"].includes(textAlignHorizontal)) {
+    text.textAlignHorizontal = textAlignHorizontal;
+  }
   const letterSpacing = Number.parseFloat(definition.letterSpacing);
   if (Number.isFinite(letterSpacing)) {
     text.letterSpacing = { unit: "PIXELS", value: letterSpacing };
@@ -112,6 +126,11 @@ async function createEditableText({ figmaApi, definition }) {
     // Older Figma runtimes may not allow text auto-resize changes here.
   }
   return text;
+}
+
+function clampEditableTextFloat(value, min, max, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.min(max, Math.max(min, number)) : fallback;
 }
 
 async function createEditableIcon({ figmaApi, definition }) {

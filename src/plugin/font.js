@@ -1,5 +1,11 @@
-async function loadPreferredTextFont(text, fontStyle, loadFont) {
+async function loadPreferredTextFont(text, fontStyle, loadFont, preferredFamily = "") {
   const candidates = cjkFontCandidates(fontStyle);
+  if (String(preferredFamily || "").trim()) {
+    candidates.unshift(
+      { family: String(preferredFamily).trim(), style: fontStyle },
+      { family: String(preferredFamily).trim(), style: "Regular" }
+    );
+  }
   candidates.push(
     { family: "Inter", style: fontStyle },
     { family: "Inter", style: "Regular" }

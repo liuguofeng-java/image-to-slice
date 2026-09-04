@@ -85,6 +85,9 @@
       const previewZoomControls = document.getElementById("previewZoomControls");
       const cutSection = document.getElementById("cutSection");
       const cutGrid = document.getElementById("cutGrid");
+      const sliceToolMode = document.getElementById("sliceToolMode");
+      const sliceToolHint = document.getElementById("sliceToolHint");
+      const sliceTypePopover = document.getElementById("sliceTypePopover");
       const exportSlicesButton = document.getElementById("exportSlices");
       const transparentAllButton = document.getElementById("transparentAll");
       const toggleAllSlicesButton = document.getElementById("toggleAllSlices");
@@ -265,6 +268,8 @@
       let sliceSettingsPosition = null;
       let sliceSettingsDrag = null;
       let sliceDraft = null;
+      let sliceCanvasTool = "select";
+      let pendingSliceClassificationId = null;
       let pendingExternalSliceDrag = null;
       let sliceEdit = null;
       const sliceCropVersions = new Map();
@@ -308,6 +313,7 @@
       let importActionsDisabled = true;
       let uiBusy = false;
       let figmaImportPending = false;
+      let pendingCompositeImportWarning = "";
       let activeFigmaImportRequestId = "";
       let figmaImportRequestSequence = 0;
       let figmaFrameHtmlExportPending = false;
@@ -430,6 +436,22 @@
       cutGrid.addEventListener("scroll", closeCutActionMenus, { passive: true });
       window.addEventListener("resize", closeCutActionMenus);
 
+      sliceToolMode.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-slice-tool]");
+        if (!button) return;
+        setSliceCanvasTool(button.dataset.sliceTool);
+      });
+      sliceTypePopover.addEventListener("click", async (event) => {
+        const button = event.target.closest("[data-slice-content-type]");
+        if (!button || !pendingSliceClassificationId) return;
+        await confirmSliceContentType(pendingSliceClassificationId, button.dataset.sliceContentType);
+      });
+      document.addEventListener("pointerdown", (event) => {
+        if (!sliceTypePopover.hidden && !event.target.closest("#sliceTypePopover")) {
+          closeSliceTypePopover();
+        }
+      });
+
       sliceSettingsClose.addEventListener("click", () => closeSliceSettingsDrawer());
       sliceImagePreviewClose.addEventListener("click", requestCloseSliceImageEditor);
       sliceImageEditorComplete.addEventListener("click", makeSliceImageEditorAiComplete);
@@ -534,6 +556,18 @@
           } else {
             requestCloseSliceImageEditor();
           }
+          return;
+        }
+        if (event.key === "Escape" && !sliceTypePopover.hidden) {
+          event.preventDefault();
+          closeSliceTypePopover();
+          return;
+        }
+        if (event.key === "Escape" && sliceDraft) {
+          event.preventDefault();
+          sliceDraft = null;
+          const card = resultGrid.querySelector(".result-card.slice-mode");
+          renderSliceOverlay(card, card?.querySelector(".slice-layer"), card?.querySelector(".result-canvas img"));
         }
       });
       document.addEventListener("pointerdown", (event) => {
@@ -630,7 +664,10 @@
               const card = pending.image.closest(".result-card");
               const layer = card?.querySelector(".slice-layer");
               sliceDraft = null;
-              await addSliceAsset({ x: 0, y: 0, width: screen.width, height: screen.height });
+              await addSliceAsset(
+                { x: 0, y: 0, width: screen.width, height: screen.height },
+                { clientX: event.clientX, clientY: event.clientY }
+              );
               if (card && layer) renderSliceOverlay(card, layer, pending.image);
             }
           }
@@ -652,7 +689,7 @@
             const draft = normalizeDraftRect(sliceDraft, currentManifest.screen);
             sliceDraft = null;
             if (draft.width >= 8 && draft.height >= 8) {
-              await addSliceAsset(draft);
+              await addSliceAsset(draft, { clientX: event.clientX, clientY: event.clientY });
             } else {
               renderSliceOverlay(card, layer, image);
             }
@@ -699,7 +736,7 @@
           const draft = normalizeDraftRect(sliceDraft, currentManifest.screen);
           sliceDraft = null;
           if (draft.width >= 8 && draft.height >= 8) {
-            await addSliceAsset(draft);
+            await addSliceAsset(draft, { clientX: event.clientX, clientY: event.clientY });
           }
           document.body.style.userSelect = "";
         }
@@ -1511,7 +1548,10 @@
         ) {
           finishFigmaImportRequest(activeImportMessage.requestId);
           setUiCollapsed(true, true);
-          setStatus("源文件已导入 Figma。", "success");
+          setStatus(
+            pendingCompositeImportWarning ? `源文件已导入 Figma；${pendingCompositeImportWarning}。` : "源文件已导入 Figma。",
+            pendingCompositeImportWarning ? "warning" : "success"
+          );
         }
         if (
           activeImportMessage
@@ -1523,7 +1563,7 @@
           finishFigmaImportRequest(activeImportMessage.requestId);
           closeHtmlPreview();
           setUiCollapsed(true, true);
-          if (skipped.length || groupWarnings.length) {
+          if (skipped.length || groupWarnings.length || pendingCompositeImportWarning) {
             console.warn("Figma 导入跳过了不支持的图层：", skipped);
             if (groupWarnings.length) {
               console.warn("Figma 导入未能恢复的组件分组：", groupWarnings);
@@ -1531,6 +1571,7 @@
             const warningParts = [];
             if (skipped.length) warningParts.push(`${skipped.length} 个不支持的图层未导入`);
             if (groupWarnings.length) warningParts.push(`${groupWarnings.length} 个组件未分组`);
+            if (pendingCompositeImportWarning) warningParts.push(pendingCompositeImportWarning);
             setStatus(
               `已导入 ${Number(activeImportMessage.createdCount) || 0} 个图层，${warningParts.join("，")}`,
               "warning"
@@ -2034,7 +2075,8 @@
         ensureImageSliceState(activeImage);
         const assets = activeImage.sliceManifest.assets;
         exportSlicesButton.disabled = assets.length === 0;
-        transparentAllButton.disabled = assets.length === 0 || assets.every((asset) => asset.transparent);
+        const rasterAssets = assets.filter((asset) => ["background", "image"].includes(asset.contentType) && asset.dataUrl);
+        transparentAllButton.disabled = rasterAssets.length === 0 || rasterAssets.every((asset) => asset.transparent);
         toggleAllSlicesButton.disabled = assets.length === 0;
         repairPreviewButton.disabled = assets.length === 0;
         toggleAllSlicesButton.textContent = assets.length > 0 && assets.every((asset) => asset.hidden) ? "全部显示" : "全部隐藏";
@@ -2043,26 +2085,36 @@
           cutGrid.innerHTML = `<div class="cut-empty">还没有切图区域</div>`;
           return;
         }
-        const displayAssets = [...assets].reverse();
-        cutGrid.innerHTML = displayAssets.map((asset, index) => `
-          <div class="cut-item${isSliceSelected(asset.id) ? " active" : ""}${asset.aiProcessing ? " ai-processing" : ""}${asset.auditFailed ? " audit-failed" : ""}" data-slice-id="${asset.id}" draggable="${asset.aiProcessing ? "false" : "true"}">
-            <img class="cut-thumb" src="${asset.dataUrl}" alt="${escapeHtml(asset.name)}" data-slice-id="${asset.id}" draggable="false" style="border-radius:${getSliceRadiiCssValue(asset, currentManifest?.screen)};" />
+        const displayEntries = buildCompositeSliceDisplayTree(assets);
+        const displayAssets = displayEntries.map((entry) => entry.layer);
+        const assetNumberById = new Map(assets.map((asset, index) => [asset.id, index + 1]));
+        cutGrid.innerHTML = displayEntries.map(({ layer: asset, depth, childCount }) => {
+          const childRemovalRegions = getDirectChildRemovalRegions(asset, assets);
+          const hasActiveChildren = childRemovalRegions.length > 0;
+          const aiTransparencyCurrent = isAiTransparentChildCleanupCurrent(asset, assets);
+          const supportsTransparency = ["background", "image"].includes(asset.contentType);
+          const canRestoreLocalTransparency = asset.transparent && !asset.aiTransparent;
+          return `
+          <div class="cut-item${depth > 0 ? " slice-tree-child" : ""}${childCount > 0 ? " slice-tree-parent" : ""}${isSliceSelected(asset.id) ? " active" : ""}${asset.aiProcessing ? " ai-processing" : ""}${asset.auditFailed ? " audit-failed" : ""}" data-slice-id="${asset.id}" data-slice-parent-id="${escapeHtml(asset.parentId || "")}" data-slice-depth="${depth}" draggable="${asset.aiProcessing ? "false" : "true"}" style="--slice-tree-indent:${Math.min(depth, 6) * 16}px;">
+            ${asset.contentType === "text"
+              ? `<div class="cut-thumb cut-thumb-text" title="${escapeHtml(asset.text?.characters || "空文字")}">${escapeHtml(asset.text?.characters || "T")}</div>`
+              : `<img class="cut-thumb" src="${asset.dataUrl}" alt="${escapeHtml(asset.name)}" data-slice-id="${asset.id}" draggable="false" style="border-radius:${getSliceRadiiCssValue(asset, currentManifest?.screen)};" />`}
             <div class="cut-meta">
-              <span class="cut-name">${assets.length - index}. ${escapeHtml(asset.name)}</span>
-              <span class="cut-size">${asset.placement.width}px × ${asset.placement.height}px${formatSliceRadiiLabel(asset)}${asset.transparent ? " · 透明 PNG" : ""}${asset.auditFailed ? " · 审计失败 · 需手动调整" : ""}${asset.aiTransparent ? " · AI 透明" : ""}${getAiInpaintTypeLabel(asset) ? ` · ${getAiInpaintTypeLabel(asset)}` : ""}${asset.svgData ? " · SVG" : ""}${asset.aiRedrawn ? " · AI 重绘" : ""}</span>
+              <span class="cut-name">${assetNumberById.get(asset.id)}. ${escapeHtml(asset.name)}${renderSliceContentTypeBadge(asset)}${childCount > 0 ? `<span class="cut-parent-badge">父级 · ${childCount}</span>` : ""}</span>
+              <span class="cut-size">${asset.placement.width}px × ${asset.placement.height}px${formatSliceRadiiLabel(asset)}${asset.transparent ? " · 透明 PNG" : ""}${asset.auditFailed ? " · 审计失败 · 需手动调整" : ""}${asset.aiTransparent ? (aiTransparencyCurrent ? " · AI 透明" : " · 子层已变化，需重新 AI 透明") : ""}${getAiInpaintTypeLabel(asset) ? ` · ${getAiInpaintTypeLabel(asset)}` : ""}${asset.svgData ? " · SVG" : ""}${asset.aiRedrawn ? " · AI 重绘" : ""}</span>
             </div>
             <details class="cut-action-menu">
               <summary class="cut-action-trigger">透明</summary>
               <div class="cut-action-list">
-                <button class="cut-transparent${asset.transparent && !asset.aiTransparent ? " done" : ""}" type="button" data-transparent-slice="${asset.id}"${asset.aiProcessing ? " disabled" : ""}>${asset.transparent && !asset.aiTransparent ? `已透明 ${renderRestoreIcon()}` : "透明"}</button>
-                <button class="cut-ai-transparent${asset.aiTransparent ? " done" : ""}" type="button" data-ai-transparent-slice="${asset.id}"${asset.aiProcessing ? " disabled" : ""}>${asset.aiTransparent ? `AI已透明 ${renderRestoreIcon()}` : "AI透明"}</button>
+                <button class="cut-transparent${canRestoreLocalTransparency ? " done" : ""}" type="button" data-transparent-slice="${asset.id}" title="${hasActiveChildren && !canRestoreLocalTransparency ? "父级包含独立子层，请使用 AI 透明清除子层内容" : "本地移除边缘背景"}"${asset.aiProcessing || !supportsTransparency || (hasActiveChildren && !canRestoreLocalTransparency) ? " disabled" : ""}>${canRestoreLocalTransparency ? `已透明 ${renderRestoreIcon()}` : "透明"}</button>
+                <button class="cut-ai-transparent${aiTransparencyCurrent ? " done" : ""}" type="button" data-ai-transparent-slice="${asset.id}"${asset.aiProcessing || !supportsTransparency ? " disabled" : ""}>${aiTransparencyCurrent ? `AI已透明 ${renderRestoreIcon()}` : (asset.aiTransparent ? "重新AI透明" : "AI透明")}</button>
               </div>
             </details>
             <details class="cut-action-menu">
               <summary class="cut-action-trigger">SVG</summary>
               <div class="cut-action-list">
-                <button class="cut-svg${asset.svgData && !asset.aiRedrawn ? " done" : ""}" type="button" data-svg-slice="${asset.id}"${asset.aiProcessing ? " disabled" : ""}>${asset.svgData && !asset.aiRedrawn ? `SVG ${renderRestoreIcon()}` : "转 SVG"}</button>
-                <button class="cut-redraw${asset.aiRedrawn && asset.svgData ? " done" : ""}" type="button" data-redraw-slice="${asset.id}"${asset.aiProcessing ? " disabled" : ""}>${asset.aiRedrawn && asset.svgData ? `AI SVG ${renderRestoreIcon()}` : "AI 重绘 SVG"}</button>
+                <button class="cut-svg${asset.svgData && !asset.aiRedrawn ? " done" : ""}" type="button" data-svg-slice="${asset.id}"${asset.aiProcessing || !["background", "image"].includes(asset.contentType) ? " disabled" : ""}>${asset.svgData && !asset.aiRedrawn ? `SVG ${renderRestoreIcon()}` : "转 SVG"}</button>
+                <button class="cut-redraw${asset.aiRedrawn && asset.svgData ? " done" : ""}" type="button" data-redraw-slice="${asset.id}"${asset.aiProcessing || !["background", "image"].includes(asset.contentType) ? " disabled" : ""}>${asset.aiRedrawn && asset.svgData ? `AI SVG ${renderRestoreIcon()}` : "AI 重绘 SVG"}</button>
               </div>
             </details>
             <button class="cut-visibility" type="button" aria-label="${asset.hidden ? "显示" : "隐藏"} ${escapeHtml(asset.name)}" data-toggle-slice="${asset.id}" title="${asset.hidden ? "显示" : "隐藏"}"${asset.aiProcessing ? " disabled" : ""}>${renderVisibilityIcon(asset.hidden)}</button>
@@ -2070,7 +2122,8 @@
             <button class="cut-remove" type="button" aria-label="删除 ${escapeHtml(asset.name)}" data-remove-slice="${asset.id}"${asset.aiProcessing ? " disabled" : ""}>×</button>
             ${asset.aiProcessing ? `<span class="cut-ai-loading"><span class="cut-ai-loading-label">${escapeHtml(asset.aiProcessingLabel || "正在请求 AI 处理切图 · 0s")}</span><button class="cut-ai-cancel" type="button" data-cancel-slice-ai="${asset.id}" aria-label="取消 AI 生成" title="取消 AI 生成"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></span>` : ""}
           </div>
-        `).join("");
+        `;
+        }).join("");
         const dropIndicator = document.createElement("div");
         dropIndicator.className = "cut-drop-indicator";
         dropIndicator.hidden = true;
@@ -2238,7 +2291,8 @@
             event.stopPropagation();
             button.closest(".cut-action-menu")?.removeAttribute("open");
             const asset = getActiveSliceAsset(button.dataset.aiTransparentSlice);
-            if (asset?.aiTransparent) {
+            const assets = getActiveResultImage()?.sliceManifest?.assets || [];
+            if (asset?.aiTransparent && isAiTransparentChildCleanupCurrent(asset, assets)) {
               restoreSliceTransparency(asset);
             } else {
               await makeSliceAiTransparent(button.dataset.aiTransparentSlice);
@@ -2690,6 +2744,12 @@
         const isMultiSelection = selectedAssets.length > 1;
         const isAnyProcessing = selectedAssets.some((entry) => entry.aiProcessing);
         const hasLockedGeometry = selectedAssets.some((entry) => isLockedAiCompleteAsset(entry));
+        const contentType = normalizeSliceContentType(asset.contentType, "image");
+        const allAssets = getActiveResultImage()?.sliceManifest?.assets || [];
+        const parentCandidates = allAssets.filter((candidate) => candidate.id !== asset.id
+          && ["background", "image"].includes(candidate.contentType)
+          && containsSlicePlacement(candidate.placement, asset.placement));
+        const textDefinition = contentType === "text" ? normalizeSliceTextDefinition(asset.text, asset.placement) : null;
         const getSharedValue = (field) => {
           const values = selectedAssets.map((entry) => field === "radius" ? getSliceRadius(entry, currentManifest?.screen) : entry.placement[field]);
           return values.every((value) => value === values[0]) ? values[0] : null;
@@ -2704,6 +2764,52 @@
             <span>标题</span>
             <input type="text" value="${isMultiSelection ? "" : escapeHtml(asset.name)}"${isMultiSelection ? ' placeholder="输入后应用到全部"' : ""} data-slice-name="${asset.id}" maxlength="80"${isAnyProcessing ? " disabled" : ""} />
           </label>
+          ${isMultiSelection ? "" : `
+            <div class="slice-settings-grid">
+              <label class="slice-settings-field">
+                <span>图层类型</span>
+                <select data-slice-content-type-setting="${asset.id}"${isAnyProcessing ? " disabled" : ""}>
+                  <option value="unclassified"${contentType === "unclassified" ? " selected" : ""}>未分类</option>
+                  <option value="background"${contentType === "background" ? " selected" : ""}>背景</option>
+                  <option value="image"${contentType === "image" ? " selected" : ""}>图片</option>
+                  <option value="text"${contentType === "text" ? " selected" : ""}>文字</option>
+                </select>
+              </label>
+              <label class="slice-settings-field">
+                <span>所属父级</span>
+                <select data-slice-parent-setting="${asset.id}"${isAnyProcessing ? " disabled" : ""}>
+                  <option value="">无父级</option>
+                  ${parentCandidates.map((candidate) => `<option value="${escapeHtml(candidate.id)}"${asset.parentId === candidate.id ? " selected" : ""}>${escapeHtml(candidate.name)}</option>`).join("")}
+                </select>
+              </label>
+            </div>
+            ${contentType === "unclassified" ? '<div class="slice-settings-warning">未分类图层不会参与导入，请先选择背景、图片或文字。</div>' : ""}
+            ${contentType === "background" && asset.backgroundCleanupStatus === "pending" ? '<div class="slice-settings-warning">此背景尚未补齐，导入时可能出现重复视觉。</div>' : ""}
+            ${textDefinition ? `
+              <label class="slice-settings-field">
+                <span>文字内容</span>
+                <textarea data-slice-text-field="characters">${escapeHtml(textDefinition.characters)}</textarea>
+              </label>
+              <div class="slice-settings-grid">
+                <label class="slice-settings-field"><span>字体提示</span><input type="text" value="${escapeHtml(textDefinition.fontFamily)}" placeholder="例如 Microsoft YaHei" data-slice-text-field="fontFamily"></label>
+                <label class="slice-settings-field"><span>字号</span><input type="number" min="8" max="160" value="${textDefinition.fontSize}" data-slice-text-field="fontSize"></label>
+                <label class="slice-settings-field"><span>字重</span><input type="number" min="100" max="900" step="100" value="${textDefinition.fontWeight}" data-slice-text-field="fontWeight"></label>
+                <label class="slice-settings-field"><span>行高</span><input type="number" min="8" max="240" value="${textDefinition.lineHeight}" data-slice-text-field="lineHeight"></label>
+                <label class="slice-settings-field"><span>字间距</span><input type="number" min="-20" max="100" step="0.1" value="${textDefinition.letterSpacing}" data-slice-text-field="letterSpacing"></label>
+                <label class="slice-settings-field"><span>文字颜色</span><input type="color" value="${textDefinition.color}" data-slice-text-field="color"></label>
+                <label class="slice-settings-field"><span>对齐</span><select data-slice-text-field="textAlignHorizontal"><option value="LEFT"${textDefinition.textAlignHorizontal === "LEFT" ? " selected" : ""}>左对齐</option><option value="CENTER"${textDefinition.textAlignHorizontal === "CENTER" ? " selected" : ""}>居中</option><option value="RIGHT"${textDefinition.textAlignHorizontal === "RIGHT" ? " selected" : ""}>右对齐</option></select></label>
+                <label class="slice-settings-field"><span>描边颜色</span><input type="color" value="${textDefinition.strokeColor}" data-slice-text-field="strokeColor"></label>
+                <label class="slice-settings-field"><span>描边宽度</span><input type="number" min="0" max="24" step="0.5" value="${textDefinition.strokeWidth}" data-slice-text-field="strokeWidth"></label>
+                <label class="slice-settings-field"><span>阴影</span><select data-slice-shadow-enabled><option value="off"${textDefinition.shadow ? "" : " selected"}>关闭</option><option value="on"${textDefinition.shadow ? " selected" : ""}>开启</option></select></label>
+                <label class="slice-settings-field"><span>阴影颜色</span><input type="color" value="${textDefinition.shadow?.color || "#000000"}" data-slice-shadow-field="color"></label>
+                <label class="slice-settings-field"><span>阴影透明度</span><input type="number" min="0" max="1" step="0.05" value="${textDefinition.shadow?.opacity ?? 0.35}" data-slice-shadow-field="opacity"></label>
+                <label class="slice-settings-field"><span>阴影 X</span><input type="number" min="-100" max="100" value="${textDefinition.shadow?.x ?? 0}" data-slice-shadow-field="x"></label>
+                <label class="slice-settings-field"><span>阴影 Y</span><input type="number" min="-100" max="100" value="${textDefinition.shadow?.y ?? 2}" data-slice-shadow-field="y"></label>
+                <label class="slice-settings-field"><span>阴影模糊</span><input type="number" min="0" max="100" value="${textDefinition.shadow?.blur ?? 4}" data-slice-shadow-field="blur"></label>
+              </div>
+              <button class="slice-settings-recognize" type="button" data-recognize-slice-text="${asset.id}"${isAnyProcessing ? " disabled" : ""}>重新 AI 识别文字</button>
+            ` : ""}
+          `}
           <div class="slice-settings-grid">
             ${renderSliceNumberControl(asset, "x", "X 坐标", getSharedValue("x"))}
             ${renderSliceNumberControl(asset, "y", "Y 坐标", getSharedValue("y"))}
@@ -2713,7 +2819,7 @@
             ${renderSliceCornerControl(asset, "topRight", "右上", getSharedCornerValue("topRight"))}
             ${renderSliceCornerControl(asset, "bottomRight", "右下", getSharedCornerValue("bottomRight"))}
             ${renderSliceCornerControl(asset, "bottomLeft", "左下", getSharedCornerValue("bottomLeft"))}
-            ${isMultiSelection ? "" : `<div class="slice-ai-complete-action">
+            ${isMultiSelection || contentType === "text" || contentType === "unclassified" ? "" : `<div class="slice-ai-complete-action">
               <span>遮挡补齐</span>
               <button class="${aiCompletePreview?.sliceId === asset.id ? "confirm" : ""}" type="button" data-preview-ai-complete="${asset.id}"${asset.aiProcessing ? " disabled" : ""}>${asset.aiProcessing ? escapeHtml(asset.aiProcessingLabel || "AI 处理中") : (aiCompletePreview?.sliceId === asset.id ? "确认补齐红色区域" : "AI补齐")}</button>
             </div>`}
@@ -2759,6 +2865,66 @@
             event.preventDefault();
             nameInput.blur();
           }
+        });
+        sliceSettingsBody.querySelector("[data-slice-content-type-setting]")?.addEventListener("change", async (event) => {
+          await confirmSliceContentType(asset.id, event.currentTarget.value);
+          sliceSettingsId = asset.id;
+          renderSliceSettingsDrawer();
+        });
+        sliceSettingsBody.querySelector("[data-slice-parent-setting]")?.addEventListener("change", (event) => {
+          const parentId = event.currentTarget.value || null;
+          if (parentId && !isValidSliceParent(asset, parentId, allAssets)) {
+            setStatus("所选父级必须是完整包含当前图层的背景或图片，且不能形成循环层级。", "warning");
+            renderSliceSettingsDrawer();
+            return;
+          }
+          recordSliceHistory();
+          asset.parentId = parentId;
+          asset.parentAssignment = "manual";
+          scheduleWorkspaceDraftSave();
+          renderCutModules(currentManifest);
+        });
+        sliceSettingsBody.querySelectorAll("[data-slice-text-field]").forEach((input) => {
+          input.addEventListener("change", () => {
+            recordSliceHistory();
+            const next = { ...(asset.text || {}) };
+            const field = input.dataset.sliceTextField;
+            next[field] = ["fontSize", "fontWeight", "lineHeight", "letterSpacing", "strokeWidth"].includes(field)
+              ? Number(input.value)
+              : input.value;
+            asset.text = normalizeSliceTextDefinition(next, asset.placement);
+            scheduleWorkspaceDraftSave();
+            renderCutModules(currentManifest);
+          });
+        });
+        sliceSettingsBody.querySelector("[data-slice-shadow-enabled]")?.addEventListener("change", (event) => {
+          recordSliceHistory();
+          asset.text = normalizeSliceTextDefinition({
+            ...(asset.text || {}),
+            shadow: event.currentTarget.value === "on"
+              ? (asset.text?.shadow || { color: "#000000", opacity: 0.35, x: 0, y: 2, blur: 4 })
+              : null
+          }, asset.placement);
+          scheduleWorkspaceDraftSave();
+          renderSliceSettingsDrawer();
+        });
+        sliceSettingsBody.querySelectorAll("[data-slice-shadow-field]").forEach((input) => {
+          input.disabled = !textDefinition?.shadow;
+          input.addEventListener("change", () => {
+            recordSliceHistory();
+            asset.text = normalizeSliceTextDefinition({
+              ...(asset.text || {}),
+              shadow: {
+                ...(asset.text?.shadow || {}),
+                [input.dataset.sliceShadowField]: input.type === "number" ? Number(input.value) : input.value
+              }
+            }, asset.placement);
+            scheduleWorkspaceDraftSave();
+            renderCutModules(currentManifest);
+          });
+        });
+        sliceSettingsBody.querySelector("[data-recognize-slice-text]")?.addEventListener("click", async () => {
+          await recognizeSliceText(asset);
         });
         sliceSettingsBody.querySelectorAll("[data-slice-field]").forEach((input) => {
           if (isAnyProcessing || (hasLockedGeometry && input.dataset.sliceField !== "radius")) input.disabled = true;
@@ -2813,7 +2979,10 @@
             await makeSliceAiComplete(id, regions);
             return;
           }
-          const regions = getSliceOverlapRegions(id);
+          const target = getActiveSliceAsset(id);
+          const regions = target?.contentType === "background"
+            ? getDirectChildRemovalRegions(target, getActiveResultImage()?.sliceManifest?.assets || [])
+            : getSliceOverlapRegions(id);
           if (regions.length === 0) {
             setStatus("这个切图没有与其他切图重叠，无法执行 AI 补齐。", "warning");
             return;
@@ -2852,17 +3021,148 @@
         if (!Array.isArray(image.sliceManifest.assets)) {
           image.sliceManifest.assets = [];
         }
+        image.sliceManifest.assets = normalizeCompositeSliceLayers(image.sliceManifest.assets);
+        reconcileAutomaticSliceParents(image.sliceManifest.assets);
         normalizeSliceAssetNames(image.sliceManifest.assets);
+      }
+
+      function renderSliceContentTypeBadge(asset) {
+        const type = normalizeSliceContentType(asset?.contentType, "image");
+        const label = { unclassified: "未分类", background: "背景", image: "图片", text: "文字" }[type];
+        return `<span class="cut-type-badge ${type}">${label}</span>`;
       }
 
       function cloneSliceAssets(assets) {
         return assets.map((asset) => ({
           ...asset,
           placement: asset.placement ? { ...asset.placement } : asset.placement,
+          text: asset.text ? {
+            ...asset.text,
+            shadow: asset.text.shadow ? { ...asset.text.shadow } : null
+          } : asset.text,
           aiProcessing: false,
           aiProcessingLabel: "",
           aiProgressLogs: []
         }));
+      }
+
+      function setSliceCanvasTool(tool) {
+        sliceCanvasTool = tool === "draw" ? "draw" : "select";
+        sliceToolMode.querySelectorAll("[data-slice-tool]").forEach((button) => {
+          const active = button.dataset.sliceTool === sliceCanvasTool;
+          button.classList.toggle("active", active);
+          button.setAttribute("aria-pressed", String(active));
+        });
+        sliceToolHint.textContent = sliceCanvasTool === "draw"
+          ? "可在已有框内连续创建背景、图片或文字层"
+          : "选择、移动或调整已有图层";
+        const card = resultGrid.querySelector(".result-card.slice-mode");
+        card?.classList.toggle("slice-draw-mode", sliceCanvasTool === "draw");
+      }
+
+      function openSliceTypePopover(asset, point = {}) {
+        if (!asset) return;
+        pendingSliceClassificationId = asset.id;
+        const width = 248;
+        const left = clampNumber(Number(point.clientX) || window.innerWidth / 2, 12, Math.max(12, window.innerWidth - width - 12), 12);
+        const top = clampNumber(Number(point.clientY) || window.innerHeight / 2, 72, Math.max(72, window.innerHeight - 142), 72);
+        sliceTypePopover.style.left = `${left}px`;
+        sliceTypePopover.style.top = `${top}px`;
+        sliceTypePopover.hidden = false;
+        requestAnimationFrame(() => sliceTypePopover.querySelector("button")?.focus());
+      }
+
+      function closeSliceTypePopover() {
+        pendingSliceClassificationId = null;
+        sliceTypePopover.hidden = true;
+      }
+
+      async function confirmSliceContentType(id, contentType) {
+        const activeImage = getActiveResultImage();
+        const asset = getActiveSliceAsset(id);
+        if (!activeImage || !asset) {
+          closeSliceTypePopover();
+          return;
+        }
+        recordSliceHistory();
+        asset.contentType = normalizeSliceContentType(contentType, "unclassified");
+        if (asset.contentType === "background") {
+          asset.backgroundCleanupStatus = "pending";
+          asset.parentId = inferSmallestContainingBackgroundId(asset, activeImage.sliceManifest.assets);
+        } else {
+          asset.parentId = inferSmallestContainingBackgroundId(asset, activeImage.sliceManifest.assets);
+          delete asset.backgroundCleanupStatus;
+        }
+        reconcileAutomaticSliceParents(activeImage.sliceManifest.assets);
+        closeSliceTypePopover();
+        renderCutModules(currentManifest);
+        const card = resultGrid.querySelector(".result-card.slice-mode");
+        renderSliceOverlay(card, card?.querySelector(".slice-layer"), card?.querySelector(".result-canvas img"));
+        scheduleWorkspaceDraftSave();
+        if (asset.contentType === "text") await recognizeSliceText(asset);
+      }
+
+      function reconcileAutomaticSliceParents(assets = []) {
+        for (const asset of assets) {
+          if (asset.parentAssignment === "manual") {
+            if (asset.parentId && !isValidSliceParent(asset, asset.parentId, assets)) asset.parentId = null;
+            continue;
+          }
+          asset.parentId = inferSmallestContainingBackgroundId(asset, assets);
+        }
+      }
+
+      async function recognizeSliceText(asset) {
+        const activeImage = getActiveResultImage();
+        if (!activeImage?.dataUrl || !asset?.placement) return;
+        if (!hasConfiguredVisionAccess()) {
+          asset.text = normalizeSliceTextDefinition(asset.text, asset.placement);
+          setStatus("已创建文字层；配置图片理解模型后可重新识别文字内容。", "warning");
+          renderCutModules(currentManifest);
+          return;
+        }
+        const progressId = createAiProgressId("recognize_text");
+        const controller = beginSliceAiRequest(asset, progressId);
+        asset.aiProcessing = true;
+        asset.aiProcessingLabel = "正在识别文字 · 0s";
+        renderCutModules(currentManifest);
+        const stopProgress = startAiProgressPolling(progressId, (progress) => {
+          if (progress.message) asset.aiProcessingLabel = progress.message;
+          renderCutModules(currentManifest);
+        });
+        try {
+          const response = await fetchBackend("/api/design/recognize-region", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            signal: controller.signal,
+            body: JSON.stringify({
+              imageDataUrl: activeImage.dataUrl,
+              width: currentManifest.screen.width,
+              height: currentManifest.screen.height,
+              region: asset.placement,
+              progressId
+            })
+          });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(result.error || `文字识别失败：${response.status}`);
+          asset.text = normalizeSliceTextDefinition(result.text, asset.placement);
+          asset.confidence = result.confidence;
+          if (result.warning) setStatus(result.warning, "warning");
+          else setStatus(`已识别文字“${asset.text.characters}”，可在设置中校正。`, "success");
+        } catch (error) {
+          if (error?.name !== "AbortError") {
+            asset.text = normalizeSliceTextDefinition(asset.text, asset.placement);
+            setStatus(error.message || String(error), "error");
+          }
+        } finally {
+          stopProgress();
+          asset.aiProcessing = false;
+          asset.aiProcessingLabel = "";
+          finishSliceAiRequest(asset, controller);
+          renderCutModules(currentManifest);
+          if (sliceSettingsDrawer.classList.contains("open") && sliceSettingsId === asset.id) renderSliceSettingsDrawer();
+          scheduleWorkspaceDraftSave();
+        }
       }
 
       function createSliceHistoryEntry(activeImage, metadata = {}) {
@@ -3015,6 +3315,23 @@
               renderSliceOverlay(card, layer, image);
               renderCutModules(currentManifest);
             }
+            return;
+          }
+          if (sliceCanvasTool === "draw") {
+            if (!isPointInsideRect(event.clientX, event.clientY, imageRect)) return;
+            event.preventDefault();
+            event.stopPropagation();
+            closeSliceTypePopover();
+            layer.setPointerCapture(event.pointerId);
+            const startPoint = pointToScreenCoords(event.clientX, event.clientY, imageRect, currentManifest.screen);
+            sliceDraft = {
+              pointerId: event.pointerId,
+              startX: startPoint.x,
+              startY: startPoint.y,
+              currentX: startPoint.x,
+              currentY: startPoint.y
+            };
+            renderSliceOverlay(card, layer, image);
             return;
           }
           const settingsTarget = event.target.closest("[data-slice-settings]");
@@ -3260,7 +3577,7 @@
             renderSliceOverlay(card, layer, image);
             return;
           }
-          await addSliceAsset(draft);
+          await addSliceAsset(draft, { clientX: event.clientX, clientY: event.clientY });
         });
 
         layer.addEventListener("pointercancel", () => {
@@ -3336,7 +3653,7 @@
               <span class="slice-radius-handle" data-slice-radius-handle="sw"></span>
           ` : "";
           return `
-            <button class="slice-box${selected ? " active" : ""}${asset.aiProcessing ? " ai-processing" : ""}" type="button" data-slice-id="${asset.id}"${asset.aiProcessing ? " disabled" : ""} style="
+            <button class="slice-box slice-type-${normalizeSliceContentType(asset.contentType, "image")}${selected ? " active" : ""}${asset.aiProcessing ? " ai-processing" : ""}" type="button" data-slice-id="${asset.id}"${asset.aiProcessing ? " disabled" : ""} style="
               left:${placement.x * scaleX}px;
               top:${placement.y * scaleY}px;
               width:${placement.width * scaleX}px;
@@ -3665,6 +3982,7 @@
             throw new Error(result.error || `AI拆图分析失败：${response.status}`);
           }
           const detectedAssets = Array.isArray(result.assets) ? result.assets : [];
+          const detectedTexts = Array.isArray(result.texts) ? result.texts : [];
           const backgrounds = Array.isArray(result.backgrounds) ? result.backgrounds : [];
           const addedCount = await appendDetectedSliceAssets(
             activeImage,
@@ -3672,6 +3990,7 @@
             progressId,
             controller.signal
           );
+          const addedTextCount = appendDetectedTextLayers(activeImage, detectedTexts, progressId);
           backgroundDecompositionReview = createBackgroundDecompositionReview(
             { backgrounds },
             currentManifest.screen
@@ -3679,8 +3998,8 @@
           backgroundDecompositionReview.imageId = activeImage.id;
           persistBackgroundDecompositionReview();
           if (backgrounds.length === 0) {
-            if (addedCount > 0) {
-              setStatus(`已添加 ${addedCount} 个普通切图；没有发现需要还原的完整背景。`, "success");
+            if (addedCount > 0 || addedTextCount > 0) {
+              setStatus(`已添加 ${addedCount} 个普通切图和 ${addedTextCount} 个文字层；没有发现需要还原的完整背景。`, "success");
             } else {
               setStatus("没有识别到普通切图或需要还原的完整背景。", "warning");
             }
@@ -4350,6 +4669,10 @@
                 kind: "complex-decoration",
                 type: "manual_slice",
                 source: "ai-background-decomposition",
+                contentType: "background",
+                parentId: null,
+                decompositionBackgroundId: job.backgroundId,
+                backgroundCleanupStatus: "clean",
                 placement: { ...job.bbox },
                 radius: job.radius,
                 radii: { ...job.radii },
@@ -4376,6 +4699,16 @@
                 pair.composite,
                 pair.rawFull
               );
+              pair.rawFull.contentType = "background";
+              pair.rawFull.parentId = null;
+              pair.rawFull.decompositionBackgroundId = job.backgroundId;
+              pair.rawFull.backgroundCleanupStatus = "clean";
+              activeImage.sliceManifest.assets.forEach((candidate) => {
+                if (candidate.pendingParentBackgroundId === job.backgroundId) {
+                  candidate.parentId = pair.composite.id;
+                  delete candidate.pendingParentBackgroundId;
+                }
+              });
               normalizeSliceAssetNames(activeImage.sliceManifest.assets);
               selectedSliceIds.add(pair.composite.id);
               activeSliceId = pair.composite.id;
@@ -4455,6 +4788,9 @@
           kind: detected.kind,
           type: "manual_slice",
           source: "ai-bbox",
+          contentType: "image",
+          parentId: null,
+          pendingParentBackgroundId: String(detected.parentBackgroundId || "").trim() || null,
           aiBatchId: batchId,
           confidence: detected.confidence,
           containsEmbeddedText: detected.containsEmbeddedText === true,
@@ -4555,6 +4891,7 @@
           }, currentManifest?.screen);
           asset.radii = getSliceRadii(asset, currentManifest?.screen);
           asset.radius = Math.max(...Object.values(asset.radii));
+          reconcileAutomaticSliceParents(getActiveResultImage()?.sliceManifest?.assets || []);
         }
         activeSliceId = id;
         const card = resultGrid.querySelector(".result-card");
@@ -4695,7 +5032,50 @@
         return preparedAssets.length;
       }
 
-      async function addSliceAsset(placement) {
+      function appendDetectedTextLayers(activeImage, detectedTexts, batchId) {
+        const texts = Array.isArray(detectedTexts) ? detectedTexts : [];
+        if (texts.length === 0) return 0;
+        ensureImageSliceState(activeImage);
+        const usedNames = new Set(activeImage.sliceManifest.assets.map((asset) => asset.name));
+        recordSliceHistory({ actionType: "ai-text-batch", batchId, addedCount: texts.length });
+        texts.forEach((detected, offset) => {
+          const placement = normalizeSlicePlacement(detected.bbox, currentManifest?.screen);
+          const asset = {
+            id: `slice_ai_text_${batchId}_${offset + 1}`,
+            name: reserveSliceAssetName(detected.name || `text_${offset + 1}`, usedNames),
+            kind: "text",
+            type: "manual_slice",
+            source: "ai-text",
+            aiBatchId: batchId,
+            confidence: detected.confidence,
+            suggestedContentType: "text",
+            contentType: "text",
+            parentId: null,
+            pendingParentBackgroundId: String(detected.parentBackgroundId || "").trim() || null,
+            placement,
+            radius: 0,
+            transparent: false,
+            aiTransparent: false,
+            aiCompleted: false,
+            aiRedrawn: false,
+            selected: true,
+            originalDataUrl: null,
+            dataUrl: null,
+            transparentDataUrl: null,
+            aiTransparentDataUrl: null,
+            svgData: null,
+            text: normalizeSliceTextDefinition(detected.text)
+          };
+          activeImage.sliceManifest.assets.push(asset);
+          activeSliceId = asset.id;
+        });
+        refreshSliceVisibility();
+        renderCutModules(currentManifest);
+        scheduleWorkspaceDraftSave();
+        return texts.length;
+      }
+
+      async function addSliceAsset(placement, typePickerPoint = null) {
         const activeImage = getActiveResultImage();
         if (!activeImage) {
           return;
@@ -4719,6 +5099,8 @@
           id,
           name,
           type: "manual_slice",
+          contentType: "unclassified",
+          parentId: null,
           placement: normalizedPlacement,
           radius: 0,
           transparent: false,
@@ -4733,6 +5115,7 @@
           svgData: null,
           ...repair
         };
+        asset.parentId = inferSmallestContainingBackgroundId(asset, activeImage.sliceManifest.assets);
         activeImage.sliceManifest.assets.push(asset);
         activeSliceId = id;
         if (repairPreviewActive) {
@@ -4746,6 +5129,8 @@
         if (card && layer && image) renderSliceOverlay(card, layer, image);
         renderCutModules(currentManifest);
         scheduleWorkspaceDraftSave();
+        if (typePickerPoint) openSliceTypePopover(asset, typePickerPoint);
+        return asset;
       }
 
       async function updateSliceAssetCrop(id) {
@@ -4884,7 +5269,7 @@
         const activeImage = getActiveResultImage();
         ensureImageSliceState(activeImage);
         const assets = activeImage?.sliceManifest?.assets || [];
-        const pendingAssets = assets.filter((asset) => !asset.transparent);
+        const pendingAssets = assets.filter((asset) => ["background", "image"].includes(asset.contentType) && asset.dataUrl && !asset.transparent);
         if (pendingAssets.length === 0) {
           renderCutModules(currentManifest);
           return;
@@ -4930,49 +5315,99 @@
         if (!asset || asset.aiProcessing) {
           return;
         }
-        setBusy(true, `正在请求 AI 生成透明 PNG：${asset.name}`, true);
-        setSliceAiProcessing(asset, "正在请求 AI 生成透明 PNG · 0s", true);
+        const allAssets = getActiveResultImage()?.sliceManifest?.assets || [];
+        const childRegions = getDirectChildRemovalRegions(asset, allAssets);
+        const childSignature = getDirectChildRemovalSignature(asset, allAssets);
+        const processingMessage = childRegions.length
+          ? `正在清除 ${childRegions.length} 个子层并生成透明父层`
+          : "正在请求 AI 生成透明 PNG";
+        setBusy(true, `${processingMessage}：${asset.name}`, true);
+        setSliceAiProcessing(asset, `${processingMessage} · 0s`, true);
         const progressId = createAiProgressId("transparent");
         const controller = beginSliceAiRequest(asset, progressId);
-        const stopProgress = startAiProgressPolling(progressId, (progress) => updateSliceAiProgress(asset, progress, "正在请求 AI 生成透明 PNG"));
+        const stopProgress = startAiProgressPolling(progressId, (progress) => updateSliceAiProgress(asset, progress, processingMessage));
         try {
           const restoreState = createSliceTransparencyRestoreState(asset);
           const sourceDataUrl = restoreState.dataUrl;
-          const response = await fetchBackend("/api/assets/ai-redraw", {
-            method: "POST",
-            signal: controller.signal,
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              dataUrl: sourceDataUrl,
+          let transparentDataUrl;
+          if (childRegions.length) {
+            const maskDataUrl = createAiCompleteRegionsMaskDataUrl(asset.placement, childRegions);
+            const blendMaskDataUrl = await createInnerFeatherMaskDataUrl(
+              maskDataUrl,
+              Math.round(clampNumber(Math.min(asset.placement.width, asset.placement.height) * 0.008, 3, 12, 6))
+            );
+            const image = await requestAiInpaint({
+              fetchBackend,
+              signal: controller.signal,
+              sourceDataUrl,
+              maskDataUrl,
               name: asset.name,
               width: asset.placement.width,
               height: asset.placement.height,
-              prompt: buildAiTransparentPrompt(asset),
-              progressId,
-              quality: "high"
-            })
-          });
-          const result = await response.json().catch(() => ({}));
-          if (!response.ok) {
-            throw new Error(result.error || `AI transparent request failed: ${response.status}`);
+              prompt: buildCompositeParentCleanupPrompt(asset, childRegions),
+              completeRegions: childRegions.map((region) => ({
+                x: Math.round(region.x - asset.placement.x),
+                y: Math.round(region.y - asset.placement.y),
+                width: Math.round(region.width),
+                height: Math.round(region.height)
+              })),
+              progressId
+            });
+            setSliceAiProcessing(asset, "正在合成纯父层并移除边缘背景", true);
+            const cleanParentDataUrl = await compositeAiInpaintResult(
+              sourceDataUrl,
+              image.dataUrl,
+              blendMaskDataUrl
+            );
+            transparentDataUrl = await removeEdgeBackground(cleanParentDataUrl);
+          } else {
+            const response = await fetchBackend("/api/assets/ai-redraw", {
+              method: "POST",
+              signal: controller.signal,
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                dataUrl: sourceDataUrl,
+                name: asset.name,
+                width: asset.placement.width,
+                height: asset.placement.height,
+                prompt: buildAiTransparentPrompt(asset),
+                progressId,
+                quality: "high"
+              })
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              throw new Error(result.error || `AI transparent request failed: ${response.status}`);
+            }
+            const image = result.images && result.images[0];
+            if (!image?.dataUrl) {
+              throw new Error("AI 透明没有返回图片");
+            }
+            transparentDataUrl = result.requiresLocalTransparency
+              ? await removeEdgeBackground(image.dataUrl)
+              : image.dataUrl;
           }
-          const image = result.images && result.images[0];
-          if (!image?.dataUrl) {
-            throw new Error("AI 透明没有返回图片");
-          }
-          const transparentDataUrl = result.requiresLocalTransparency
-            ? await removeEdgeBackground(image.dataUrl)
-            : image.dataUrl;
           recordSliceHistory();
           applySliceTransparencyResult(asset, {
             dataUrl: transparentDataUrl,
             ai: true
           });
+          asset.aiTransparentChildSignature = childSignature;
+          asset.aiTransparentExcludedChildCount = childRegions.length;
+          if (childRegions.length) {
+            asset.compositeCleanupStatus = "clean";
+            if (asset.contentType === "background") asset.backgroundCleanupStatus = "clean";
+          }
           activeSliceId = id;
           refreshSliceVisibility();
           renderCutModules(currentManifest);
           scheduleWorkspaceDraftSave();
-          setStatus(`已生成 AI 透明 PNG：${asset.name}。原切图仍保留。`, "success");
+          setStatus(
+            childRegions.length
+              ? `已生成纯父层：${asset.name}，并清除 ${childRegions.length} 个子层区域。`
+              : `已生成 AI 透明 PNG：${asset.name}。原切图仍保留。`,
+            "success"
+          );
         } catch (error) {
           if (error?.name !== "AbortError") {
             setStatus(`AI 透明 PNG 失败：${error.message || String(error)}`, "error");
@@ -5027,6 +5462,7 @@
           asset.aiCompletedDataUrl = completedDataUrl;
           asset.dataUrl = completedDataUrl;
           asset.aiCompleted = true;
+          if (asset.contentType === "background") asset.backgroundCleanupStatus = "clean";
           asset.aiCompletedPlacement = { ...asset.placement };
           asset.lastAiOperation = "complete";
           delete asset.transparencyRestoreState;
@@ -5283,11 +5719,11 @@
 
           assets.forEach((asset, index) => {
             const exportedAsset = manifest.assets[index];
-            files.push({
+            if (exportedAsset.filename) files.push({
               name: exportedAsset.filename,
               data: dataUrlToUint8Array(asset.dataUrl)
             });
-            if (asset.svgData) {
+            if (exportedAsset.svgFilename && asset.svgData) {
               files.push({
                 name: exportedAsset.svgFilename,
                 data: textToUint8Array(asset.svgData)
@@ -5316,6 +5752,12 @@
         recordSliceHistory();
         sliceCropVersions.delete(id);
         activeImage.sliceManifest.assets = activeImage.sliceManifest.assets.filter((asset) => asset.id !== id);
+        activeImage.sliceManifest.assets.forEach((asset) => {
+          if (asset.parentId === id) {
+            asset.parentId = null;
+            asset.parentAssignment = "automatic";
+          }
+        });
         selectedSliceIds.delete(id);
         if (activeSliceId === id) {
           activeSliceId = [...selectedSliceIds].at(-1) || null;
@@ -5347,6 +5789,12 @@
         const selectedIds = new Set(selectedAssets.map((asset) => asset.id));
         selectedIds.forEach((id) => sliceCropVersions.delete(id));
         activeImage.sliceManifest.assets = activeImage.sliceManifest.assets.filter((asset) => !selectedIds.has(asset.id));
+        activeImage.sliceManifest.assets.forEach((asset) => {
+          if (selectedIds.has(asset.parentId)) {
+            asset.parentId = null;
+            asset.parentAssignment = "automatic";
+          }
+        });
         selectedSliceIds.clear();
         activeSliceId = null;
         sliceSelectionAnchorId = null;
@@ -5366,6 +5814,10 @@
         const targetIndex = displayAssets.findIndex((asset) => asset.id === targetId);
         if (sourceIndex < 0 || targetIndex < 0) return;
         if (displayAssets[sourceIndex].aiProcessing || displayAssets[targetIndex].aiProcessing) return;
+        if ((displayAssets[sourceIndex].parentId || null) !== (displayAssets[targetIndex].parentId || null)) {
+          setStatus("只能在同一父级内调整图层顺序；请在设置中修改所属父级。", "warning");
+          return;
+        }
         recordSliceHistory();
         const [moved] = displayAssets.splice(sourceIndex, 1);
         const targetIndexAfterMove = displayAssets.findIndex((asset) => asset.id === targetId);
@@ -5517,7 +5969,7 @@
         ensureImageSliceState(activeImage);
         const assets = await Promise.all((activeImage?.sliceManifest?.assets || []).map(async (asset) => ({
           ...asset,
-          ...(!asset.svgData && asset.dataUrl ? {
+          ...(asset.contentType !== "text" && !asset.svgData && asset.dataUrl ? {
             dataUrl: await ensurePngOrJpegDataUrl(asset.dataUrl)
           } : {}),
           selected: isSliceAssetIncludedForImport(asset)
@@ -5531,6 +5983,9 @@
       }
 
       function isSliceAssetIncludedForImport(asset) {
+        const contentType = normalizeSliceContentType(asset?.contentType, "image");
+        if (asset?.hidden || contentType === "unclassified") return false;
+        if (contentType === "text" && !String(asset?.text?.characters || "").trim()) return false;
         return asset?.selected !== false || Boolean(asset?.aiCompleteSourceAssetId);
       }
 
@@ -5568,6 +6023,7 @@
       }
 
       function canStartFigmaImport() {
+        pendingCompositeImportWarning = "";
         if (!currentManifest) return false;
         if (!canStartFigmaImportOperation({
           uiBusy,
@@ -5580,6 +6036,14 @@
         if (hasRunningSliceAiTasks()) {
           setStatus("仍有 AI 生成任务正在进行，请等待任务结束或取消任务后再导入 Figma。", "warning");
           return false;
+        }
+        const importState = getCompositeImportState(getActiveResultImage()?.sliceManifest?.assets || []);
+        if (importState.unclassified.length || importState.dirtyBackgrounds.length) {
+          const parts = [];
+          if (importState.unclassified.length) parts.push(`${importState.unclassified.length} 个未分类或空文字图层将被跳过`);
+          if (importState.dirtyBackgrounds.length) parts.push(`${importState.dirtyBackgrounds.length} 个背景尚未补齐，可能出现重复视觉`);
+          pendingCompositeImportWarning = parts.join("；");
+          setStatus(pendingCompositeImportWarning + "。", "warning");
         }
         return true;
       }
@@ -6386,7 +6850,7 @@
         return Boolean(
           element
           && element !== screen
-          && !element.matches(".fit-shell,.fit-box,[data-reference-asset]")
+          && !element.matches(".fit-shell,.fit-box,[data-reference-asset],[data-reference-text]")
           && element.matches(REFERENCE_OWNER_SELECTOR)
         );
       }
@@ -6454,8 +6918,8 @@
           .filter((candidate) => candidate.rect.width > 0 && candidate.rect.height > 0);
         const assetsById = new Map(activeHtmlPreviewAssets.map((asset) => [String(asset?.id || ""), asset]));
 
-        for (const node of [...screen.querySelectorAll("[data-reference-asset]")]) {
-          const id = String(node.getAttribute("data-reference-asset") || "");
+        for (const node of [...screen.querySelectorAll("[data-reference-asset],[data-reference-text]")]) {
+          const id = String(node.getAttribute("data-reference-asset") || node.getAttribute("data-reference-text") || "");
           const existingOwner = node.parentElement?.closest(REFERENCE_OWNER_SELECTOR);
           if (existingOwner && screen.contains(existingOwner) && isHtmlPreviewReferenceOwnerCandidate(existingOwner, screen)) {
             markHtmlPreviewReferenceOwner(doc, existingOwner, nextOwnerId);
@@ -6507,10 +6971,10 @@
 
       function measureHtmlPreviewReferenceAssets(screen, assets) {
         const screenRect = screen.getBoundingClientRect();
-        const nodes = [...screen.querySelectorAll("[data-reference-asset]")];
+        const nodes = [...screen.querySelectorAll("[data-reference-asset],[data-reference-text]")];
         return assets.map((asset) => {
           const id = String(asset?.id || "");
-          const node = nodes.find((element) => element.getAttribute("data-reference-asset") === id);
+          const node = nodes.find((element) => (element.getAttribute("data-reference-asset") || element.getAttribute("data-reference-text")) === id);
           if (!node) {
             throw new Error(`预览缺少切图节点：${id}`);
           }
@@ -6539,10 +7003,10 @@
       function measureHtmlPreviewReferenceAssetExportGeometries(screen, assets) {
         const doc = screen.ownerDocument;
         const screenRect = screen.getBoundingClientRect();
-        const nodes = [...screen.querySelectorAll("[data-reference-asset]")];
+        const nodes = [...screen.querySelectorAll("[data-reference-asset],[data-reference-text]")];
         return assets.map((asset) => {
           const id = String(asset?.id || "");
-          const node = nodes.find((element) => element.getAttribute("data-reference-asset") === id);
+          const node = nodes.find((element) => (element.getAttribute("data-reference-asset") || element.getAttribute("data-reference-text")) === id);
           if (!node) {
             throw new Error(`预览缺少切图节点：${id}`);
           }
@@ -6731,6 +7195,7 @@
           let exportedAssetIndex = 0;
           for (const referenceAsset of referenceAssets) {
             const id = String(referenceAsset.id || "");
+            if (referenceAsset.contentType === "text") continue;
             const nodes = [...exportedDoc.querySelectorAll("[data-reference-asset]")]
               .filter((node) => node.getAttribute("data-reference-asset") === id);
             if (!nodes.length) continue;
@@ -6758,6 +7223,9 @@
 
           exportedDoc.querySelectorAll("[data-reference-asset]").forEach((node) => {
             node.removeAttribute("data-reference-asset");
+          });
+          exportedDoc.querySelectorAll("[data-reference-text]").forEach((node) => {
+            node.removeAttribute("data-reference-text");
           });
           const ownerPositionCss = [];
           [...exportedDoc.querySelectorAll(".plugin-reference-owner-positioned")].forEach((node, index) => {
@@ -6836,7 +7304,10 @@
           if (figExportUiMode.downloadsFig) {
             setBusy(true, "正在生成可导入 Figma 的 .fig 文件…");
             await downloadFigManifest("editable", manifest);
-            setStatus("设计稿 .fig 已开始下载。", "success");
+            setStatus(
+              pendingCompositeImportWarning ? `设计稿 .fig 已开始下载；${pendingCompositeImportWarning}。` : "设计稿 .fig 已开始下载。",
+              pendingCompositeImportWarning ? "warning" : "success"
+            );
             return;
           }
           setBusy(true, "正在发送可编辑图层到 Figma…");
@@ -6870,7 +7341,10 @@
           const manifest = await buildPlacementManifest(currentManifest);
           setBusy(true, "正在生成可导入 Figma 的切图 .fig…");
           await downloadFigManifest("slice", manifest);
-          setStatus("切图 .fig 已开始下载。", "success");
+          setStatus(
+            pendingCompositeImportWarning ? `切图 .fig 已开始下载；${pendingCompositeImportWarning}。` : "切图 .fig 已开始下载。",
+            pendingCompositeImportWarning ? "warning" : "success"
+          );
         } catch (error) {
           console.error("下载切图 .fig 失败。", error);
           setStatus(`下载切图 .fig 失败：${error.message || String(error)}`, "error");
@@ -7282,6 +7756,8 @@
         const explicitId = String(
           attrs["data-reference-asset"] ||
           attrs.dataReferenceAsset ||
+          attrs["data-reference-text"] ||
+          attrs.dataReferenceText ||
           attrs["data-asset-id"] ||
           attrs.dataAssetId ||
           ""
@@ -7412,7 +7888,7 @@
       }
 
       async function createRepairedPreviewImage(activeImage) {
-        const assets = activeImage?.sliceManifest?.assets || [];
+        const assets = (activeImage?.sliceManifest?.assets || []).filter(isSliceAssetIncludedForImport);
         if (!activeImage?.dataUrl) return "";
         const displayedPreview = repairPreviewActive
           ? resultGrid.querySelector(".result-card.slice-mode .result-canvas img")?.src
@@ -7471,10 +7947,25 @@
 
       async function collectEditableReferenceAssets(activeImage) {
         const assets = (activeImage?.sliceManifest?.assets || [])
-          .filter((asset) => isSliceAssetIncludedForImport(asset) && asset.dataUrl && asset.placement);
+          .filter((asset) => isSliceAssetIncludedForImport(asset)
+            && asset.placement
+            && (asset.contentType === "text" || asset.dataUrl));
         const normalized = [];
         const failures = [];
         for (const asset of assets) {
+          if (asset.contentType === "text") {
+            normalized.push({
+              id: asset.id,
+              name: asset.name,
+              kind: asset.kind,
+              type: asset.type,
+              contentType: "text",
+              parentId: asset.parentId || null,
+              text: normalizeSliceTextDefinition(asset.text, asset.placement),
+              placement: asset.placement
+            });
+            continue;
+          }
           let dataUrl = getSliceActiveImageDataUrl(asset);
           try {
             dataUrl = await ensurePngOrJpegDataUrl(dataUrl);
@@ -7491,6 +7982,8 @@
             name: asset.name,
             kind: asset.kind,
             type: asset.type,
+            contentType: asset.contentType || "image",
+            parentId: asset.parentId || null,
             dataUrl,
             radius: getSliceRadius(asset, currentManifest?.screen),
             radii: getSliceRadii(asset, currentManifest?.screen),
@@ -7500,7 +7993,11 @@
         if (failures.length) {
           throw new Error(`AI图层导入失败：以下切图无法读取：${failures.join("、")}`);
         }
-        return normalized;
+        const parentIds = new Set(normalized.map((asset) => String(asset.parentId || "")).filter(Boolean));
+        return normalized.map((asset) => ({
+          ...asset,
+          hasChildren: parentIds.has(String(asset.id || ""))
+        }));
       }
 
       async function ensurePngOrJpegDataUrl(dataUrl) {

@@ -76,6 +76,10 @@ const {
 const {
   exportFigManifest
 } = require("./src/fig-export/export-fig");
+const {
+  buildRegionTextRecognitionPrompt,
+  parseRegionTextRecognitionText
+} = require("./src/core/region-text-recognition");
 
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 18787);
@@ -156,6 +160,7 @@ const handleDesignRoutes = createDesignRoutes({
   readJson,
   runWithAiProgress,
   planBackgroundDecomposition,
+  recognizeTextRegion,
   reconstructEditableDesignH5,
   captureHighFidelityFigma: (payload) =>
     playwrightFigmaCaptureService.capture(payload),
@@ -1034,11 +1039,12 @@ async function planBackgroundDecomposition(payload, requestContext) {
   }
   updateAiProgress(
     payload.progressId,
-    `已识别 ${parsed.assets.length} 个普通切图和 ${parsed.backgrounds.length} 个完整背景候选`
+    `已识别 ${parsed.assets.length} 个普通切图、${parsed.texts.length} 个文字层和 ${parsed.backgrounds.length} 个完整背景候选`
   );
   return {
     ok: true,
     assets: parsed.assets,
+    texts: parsed.texts,
     backgrounds: parsed.backgrounds,
     provider: {
       baseUrl: requestContext.config.baseUrl,
@@ -1047,12 +1053,51 @@ async function planBackgroundDecomposition(payload, requestContext) {
   };
 }
 
+async function recognizeTextRegion(payload, requestContext) {
+  const imageDataUrl = assertString(payload.imageDataUrl || "", "imageDataUrl");
+  if (!/^data:image\/(?:png|jpeg|jpg|webp);base64,/i.test(imageDataUrl)) {
+    throw badRequest("imageDataUrl must be a PNG, JPEG, or WebP data URL");
+  }
+  const requestedWidth = Number(payload.width);
+  const requestedHeight = Number(payload.height);
+  if (!Number.isFinite(requestedWidth) || requestedWidth < 1 || !Number.isFinite(requestedHeight) || requestedHeight < 1) {
+    throw badRequest("width and height must be positive numbers");
+  }
+  const width = Math.round(clampNumber(requestedWidth, 1, 32768));
+  const height = Math.round(clampNumber(requestedHeight, 1, 32768));
+  const source = payload.region && typeof payload.region === "object" ? payload.region : {};
+  const rawRegion = [source.x, source.y, source.width, source.height].map(Number);
+  if (!rawRegion.every(Number.isFinite) || rawRegion[2] <= 0 || rawRegion[3] <= 0) {
+    throw badRequest("region must contain valid x, y, width, and height values");
+  }
+  const x = Math.round(clampNumber(rawRegion[0], 0, width - 1));
+  const y = Math.round(clampNumber(rawRegion[1], 0, height - 1));
+  const region = {
+    x,
+    y,
+    width: Math.round(clampNumber(rawRegion[2], 1, width - x)),
+    height: Math.round(clampNumber(rawRegion[3], 1, height - y))
+  };
+  if (![region.x, region.y, region.width, region.height].every(Number.isFinite)) {
+    throw badRequest("region must contain valid x, y, width, and height values");
+  }
+  updateAiProgress(payload.progressId, "正在读取选区文字内容");
+  const rawText = await requestBackgroundDecompositionText(
+    buildRegionTextRecognitionPrompt({ width, height, region }),
+    imageDataUrl,
+    requestContext
+  );
+  const result = parseRegionTextRecognitionText(rawText, { region });
+  updateAiProgress(payload.progressId, "已识别文字内容和基础字效");
+  return { ok: true, ...result };
+}
+
 function normalizeEditableReferenceAssets(value, width, height) {
   if (!Array.isArray(value)) {
     return [];
   }
   const ids = new Set();
-  return value.map((asset, index) => {
+  const normalizedAssets = value.map((asset, index) => {
     if (!asset || typeof asset !== "object") {
       throw badRequest(`切图资产 ${index + 1} 格式无效`);
     }
@@ -1072,6 +1117,9 @@ function normalizeEditableReferenceAssets(value, width, height) {
     const assetWidth = Number(placement?.width);
     const assetHeight = Number(placement?.height);
     const radius = Number(asset.radius || 0);
+    const contentType = ["background", "image", "text"].includes(String(asset.contentType || ""))
+      ? String(asset.contentType)
+      : "image";
     if (
       !Number.isFinite(x) || x < 0
       || !Number.isFinite(y) || y < 0
@@ -1084,11 +1132,14 @@ function normalizeEditableReferenceAssets(value, width, height) {
     ) {
       throw badRequest(`切图资产 ${id} 的坐标或圆角超出画板范围`);
     }
-    return {
+    const normalized = {
       id,
       name: safeNodeName(asset.name || id),
       kind: safeNodeName(asset.kind || asset.type || "asset"),
       type: safeNodeName(asset.type || "image"),
+      contentType,
+      parentId: String(asset.parentId || "").trim() || null,
+      ...(contentType === "text" ? { text: normalizeEditableReferenceText(asset.text, assetWidth, assetHeight) } : {}),
       radius: Math.round(radius),
       placement: {
         x: Math.round(x),
@@ -1097,7 +1148,60 @@ function normalizeEditableReferenceAssets(value, width, height) {
         height: Math.round(assetHeight)
       }
     };
+    if (contentType === "text" && !normalized.text.characters.trim()) {
+      throw badRequest(`文字图层 ${id} 缺少可编辑文字内容`);
+    }
+    return normalized;
   });
+  const byId = new Map(normalizedAssets.map((asset) => [asset.id, asset]));
+  for (const asset of normalizedAssets) {
+    if (!asset.parentId) continue;
+    const parent = byId.get(asset.parentId);
+    if (!parent || !["background", "image"].includes(parent.contentType)) throw badRequest(`切图资产 ${asset.id} 的父级必须是背景或图片图层`);
+    if (
+      asset.placement.x < parent.placement.x
+      || asset.placement.y < parent.placement.y
+      || asset.placement.x + asset.placement.width > parent.placement.x + parent.placement.width
+      || asset.placement.y + asset.placement.height > parent.placement.y + parent.placement.height
+    ) throw badRequest(`切图资产 ${asset.id} 必须完整位于父级范围内`);
+    const seen = new Set([asset.id]);
+    let cursor = parent;
+    while (cursor) {
+      if (seen.has(cursor.id)) throw badRequest(`切图资产 ${asset.id} 的父子关系存在循环`);
+      seen.add(cursor.id);
+      cursor = cursor.parentId ? byId.get(cursor.parentId) : null;
+    }
+  }
+  return normalizedAssets;
+}
+
+function normalizeEditableReferenceText(value, width, height) {
+  const text = value && typeof value === "object" ? value : {};
+  return {
+    characters: String(text.characters || "").slice(0, 4000),
+    fontFamily: String(text.fontFamily || "").trim().slice(0, 120),
+    fontWeight: Math.round(normalizeEditableTextNumber(text.fontWeight, 100, 900, 600)),
+    fontSize: normalizeEditableTextNumber(text.fontSize, 8, 160, Math.max(12, Math.min(160, height * 0.7))),
+    lineHeight: normalizeEditableTextNumber(text.lineHeight, 8, 240, Math.max(16, Math.min(240, height))),
+    letterSpacing: normalizeEditableTextNumber(text.letterSpacing, -20, 100, 0),
+    color: /^#[0-9a-f]{6}$/i.test(String(text.color || "")) ? String(text.color).toUpperCase() : "#FFFFFF",
+    textAlignHorizontal: ["LEFT", "CENTER", "RIGHT", "JUSTIFIED"].includes(String(text.textAlignHorizontal || "").toUpperCase())
+      ? String(text.textAlignHorizontal).toUpperCase()
+      : "CENTER",
+    strokeColor: /^#[0-9a-f]{6}$/i.test(String(text.strokeColor || "")) ? String(text.strokeColor).toUpperCase() : "#000000",
+    strokeWidth: normalizeEditableTextNumber(text.strokeWidth, 0, Math.min(24, width, height), 0),
+    shadow: text.shadow && typeof text.shadow === "object" ? {
+      color: /^#[0-9a-f]{6}$/i.test(String(text.shadow.color || "")) ? String(text.shadow.color).toUpperCase() : "#000000",
+      opacity: normalizeEditableTextNumber(text.shadow.opacity, 0, 1, 0.35),
+      x: normalizeEditableTextNumber(text.shadow.x, -100, 100, 0),
+      y: normalizeEditableTextNumber(text.shadow.y, -100, 100, 2),
+      blur: normalizeEditableTextNumber(text.shadow.blur, 0, 100, 4)
+    } : null
+  };
+}
+
+function normalizeEditableTextNumber(value, min, max, fallback) {
+  return Number.isFinite(Number(value)) ? clampNumber(Number(value), min, max) : fallback;
 }
 
 function buildEditableDesignH5Prompt({ prompt, width, height, previewWidth, previewHeight, referenceAssets = [] }) {
@@ -1109,7 +1213,11 @@ function buildEditableDesignH5Prompt({ prompt, width, height, previewWidth, prev
         const sw = Math.round(p.width * (previewWidth / width));
         const sh = Math.round(p.height * (previewHeight / height));
         const radius = Math.round((asset.radius || 0) * (previewWidth / width));
-        return `- asset ${index + 1}: id=${asset.id}, name=${asset.name}, metadata only, source x=${p.x}, y=${p.y}, w=${p.width}, h=${p.height}, radius=${asset.radius || 0}; preview x=${sx}, y=${sy}, w=${sw}, h=${sh}, radius=${radius}. REQUIRED ANCHOR HTML: <img class="readable-name" data-reference-asset="${asset.id}" src="asset:${asset.id}" alt="${asset.name || asset.id}">. Put its geometry in class-based CSS. Do not redraw, replace, simplify, recolor, crop, or move it.`;
+        if (asset.contentType === "text") {
+          const text = asset.text || {};
+          return `- editable text ${index + 1}: id=${asset.id}, name=${asset.name}, parent=${asset.parentId || "none"}, source x=${p.x}, y=${p.y}, w=${p.width}, h=${p.height}; preview x=${sx}, y=${sy}, w=${sw}, h=${sh}. REQUIRED ANCHOR HTML: <span class="readable-name" data-reference-text="${asset.id}">${escapeHtml(text.characters || "")}</span>. Use font-size:${text.fontSize}px, line-height:${text.lineHeight}px, font-weight:${text.fontWeight}, color:${text.color}, letter-spacing:${text.letterSpacing}px, text-align:${String(text.textAlignHorizontal || "CENTER").toLowerCase()}. Preserve its stroke and shadow with CSS where present. Do not duplicate this text elsewhere.`;
+        }
+        return `- asset ${index + 1}: id=${asset.id}, name=${asset.name}, type=${asset.contentType}, parent=${asset.parentId || "none"}, metadata only, source x=${p.x}, y=${p.y}, w=${p.width}, h=${p.height}, radius=${asset.radius || 0}; preview x=${sx}, y=${sy}, w=${sw}, h=${sh}, radius=${radius}. REQUIRED ANCHOR HTML: <img class="readable-name" data-reference-asset="${asset.id}" src="asset:${asset.id}" alt="${asset.name || asset.id}">. Put its geometry in class-based CSS. Do not redraw, replace, simplify, recolor, crop, or move it.`;
       }).join("\n")
     : "- No user-sliced assets were provided.";
   return [
@@ -1133,12 +1241,13 @@ function buildEditableDesignH5Prompt({ prompt, width, height, previewWidth, prev
     "- Use the screenshot as the coordinate source: status bar, header, cards, icons, tabs, list rows, and bottom navigation must keep their original x/y/width/height relationships.",
     "- The screenshot is the only source of truth. The user prompt is only theme context and must not be copied as interface text.",
     "- Do not use the full screenshot as a background image. Build the UI with HTML/CSS shapes, editable text, and provided sliced assets.",
-    "- Every provided sliced asset is mandatory and is a locked visual anchor. Place each one as an <img> inside .screen at its exact preview x/y/width/height.",
+    "- Every provided sliced asset is mandatory and is a locked visual anchor. Place bitmap assets as <img> and editable text assets as <span data-reference-text> inside .screen at their exact preview geometry.",
+    "- Every provided editable text anchor is mandatory. Keep its exact text and geometry and do not create a duplicate raster or text copy.",
     "- If a sliced asset is an icon, mascot, avatar, decorative badge, product image, or complex graphic, DO NOT redraw it with CSS/SVG and DO NOT replace it with a similar icon. Use the exact asset:<id> image.",
     "- The injected asset must be visible in the final page. Do not cover it with white cards, text blocks, masks, or gradients.",
     "- Put sliced assets above their matching card/background but below only text that truly overlays the original image. Do not hide them behind white cards.",
     "- Do not invent large blank cards. If a region exists, fill it with its visible content.",
-    "- Transcribe all visible text from the screenshot, even when it partially or fully overlaps a sliced asset. If unreadable, use a very short plausible placeholder only where text exists.",
+    "- Transcribe all visible text from the screenshot, even when it overlaps a sliced asset, except text already supplied as an editable text anchor. Never duplicate an editable text anchor.",
     "- Text must not reflow differently from the screenshot. Short labels, currency values, dates, tab labels, button labels, nav labels, and list titles should use white-space:nowrap.",
     "- Multi-line text is allowed only when the screenshot itself clearly shows multiple lines.",
     "- Currency and numeric values must stay on one line, e.g. ¥268.00 must not become two lines or lose decimals.",
@@ -1170,6 +1279,7 @@ function buildEditableDesignH5Prompt({ prompt, width, height, previewWidth, prev
     "- Treat every listed asset as an already-cut real UI element. Its coordinates are authoritative.",
     "- A sliced asset rectangle only defines that image asset's geometry. Do not use overlap with it as evidence that nearby or overlapping text, icons, badges, decoration, or controls should be omitted.",
     "- Place each reference asset inside its smallest coherent component owner: the item, row, card, entry, or action that owns its related text.",
+    "- When parent metadata is present, place the child anchor inside the matching background/component container while preserving screen-relative geometry.",
     "- Use parent-local left/top coordinates for a nested reference asset while preserving its authoritative screen-relative rectangle.",
     "- Do not place all reference assets directly under .screen merely to keep global coordinates.",
     "- Page-wide artwork, section-wide decoration, and assets with no reliable component owner may remain at a broad container.",
@@ -1180,7 +1290,7 @@ function buildEditableDesignH5Prompt({ prompt, width, height, previewWidth, prev
     "Pixel reconstruction workflow:",
     "1. Read the screenshot directly and create the main screen background and section bounding boxes first.",
     "2. Place all cards, banners, list rows, nav bars, search boxes, buttons, dividers, and gradients at their approximate screenshot coordinates.",
-    "3. Place all required <img data-reference-asset> anchors at the exact coordinates listed above.",
+    "3. Place all required image and editable-text anchors at the exact coordinates listed above.",
     "4. Add visible text from the screenshot, preserving line breaks, font weight, size hierarchy, and color.",
     "5. Add simple unsliced line icons only where the screenshot has unsliced line icons.",
     "6. Review for common failures: no empty giant cards, no copied user prompt as UI text, no missing sliced assets, no rearranged grid, no unrelated icon set.",
@@ -1192,7 +1302,7 @@ function buildEditableDesignH5Prompt({ prompt, width, height, previewWidth, prev
     "- Body background may be neutral gray for preview only; the UI itself must be inside .screen.",
     "- .screen must have width and height exactly as specified and overflow hidden.",
     "- Asset references must use src=\"asset:<id>\". Do not embed base64 yourself.",
-    "- Asset references should include data-reference-asset=\"<id>\" so the importer can preserve them.",
+    "- Image references must include data-reference-asset=\"<id>\"; editable text references must include data-reference-text=\"<id>\" so the importer can preserve them.",
     "- Keep CSS readable and grouped by major regions.",
     "- Prefer border-box sizing.",
     "",

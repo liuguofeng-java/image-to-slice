@@ -28,6 +28,8 @@ function createFastAuthoritativeAssetNode(asset, radius = 0, captureZIndex = 0) 
   if (![x, y, width, height].every(Number.isFinite)) {
     return null;
   }
+  const semanticGroupId = asset.parentId
+    || (asset.contentType === "background" || (asset.contentType === "image" && asset.hasChildren) ? sourceAssetId : "");
   const common = {
     name: asset.name || sourceAssetId,
     x,
@@ -44,8 +46,32 @@ function createFastAuthoritativeAssetNode(asset, radius = 0, captureZIndex = 0) 
       }
     } : {}),
     sourceAssetId,
-    captureZIndex: Number.isFinite(Number(captureZIndex)) ? Number(captureZIndex) : 0
+    captureZIndex: Number.isFinite(Number(captureZIndex)) ? Number(captureZIndex) : 0,
+    ...(semanticGroupId ? {
+      semanticGroupId,
+      semanticGroupName: asset.parentId
+        ? `${asset.parentId}_group`
+        : `${asset.name || sourceAssetId}_group`
+    } : {})
   };
+  if (asset.contentType === "text" && String(asset?.text?.characters || "").trim()) {
+    const text = asset.text || {};
+    return {
+      type: "text",
+      ...common,
+      text: String(text.characters),
+      fontFamily: text.fontFamily,
+      fontWeight: text.fontWeight,
+      fontSize: text.fontSize,
+      lineHeight: text.lineHeight,
+      letterSpacing: text.letterSpacing,
+      color: text.color,
+      textAlignHorizontal: text.textAlignHorizontal,
+      strokeColor: text.strokeColor,
+      strokeWidth: text.strokeWidth,
+      shadow: text.shadow
+    };
+  }
   if (String(asset.svgData || "").trim()) {
     return {
       type: "svg",

@@ -64,6 +64,7 @@ function parseSliceAssetDetectionText(text, { width, height }) {
       bbox,
       confidence: Number.isFinite(confidenceValue) ? clamp(confidenceValue, 0, 1) : null,
       containsEmbeddedText: asset?.containsEmbeddedText === true,
+      parentBackgroundId: String(asset?.parentBackgroundId || "").trim().slice(0, 120) || null,
       reason: String(asset?.reason || "").trim().slice(0, 300)
     });
   });

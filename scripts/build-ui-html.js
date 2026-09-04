@@ -5,14 +5,15 @@ const STYLE_PLACEHOLDER = "/* __UI_STYLES__ */";
 const CAPTURE_RUNTIME_PLACEHOLDER = "/* __WEB_TO_FIGMA_CAPTURE_RUNTIME__ */";
 const VENDOR_SCRIPT_PLACEHOLDER = "/* __UI_VENDOR_SCRIPTS__ */";
 const APP_SCRIPT_PLACEHOLDER = "/* __UI_APP_SCRIPT__ */";
+const portableSourcePath = (value) => value.replace(/\\/g, "/");
 
 const DEFAULT_CAPTURE_RUNTIME_PATHS = [
   path.join("src", "vendor", "figma-capture.js")
-];
+].map(portableSourcePath);
 
 const DEFAULT_VENDOR_SCRIPT_PATHS = [
   path.join("src", "vendor", "imagetracer.js")
-];
+].map(portableSourcePath);
 
 const DEFAULT_APP_SCRIPT_PATHS = [
   // Shared UI helpers and pure business utilities.
@@ -40,6 +41,7 @@ const DEFAULT_APP_SCRIPT_PATHS = [
 
   // Local UI state helpers.
   path.join("src", "ui", "state", "slice-ai-state.js"),
+  path.join("src", "ui", "state", "composite-slice-layers.js"),
   path.join("src", "ui", "state", "background-decomposition.js"),
   path.join("src", "ui", "state", "html-preview-cache.js"),
   path.join("src", "ui", "state", "figma-frame-html-export-state.js"),
@@ -57,7 +59,7 @@ const DEFAULT_APP_SCRIPT_PATHS = [
 
   // Bootstrap and event orchestration. Keep this last.
   path.join("src", "ui", "app.js")
-];
+].map(portableSourcePath);
 
 function buildUiHtml(templateHtml, stylesCss, appScript = "", vendorScript = "", captureRuntime = "") {
   const appScriptContent = Array.isArray(appScript) ? appScript.join("\n") : appScript;

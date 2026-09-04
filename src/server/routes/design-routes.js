@@ -3,6 +3,7 @@ function createDesignRoutes({
   readJson,
   runWithAiProgress,
   planBackgroundDecomposition,
+  recognizeTextRegion,
   reconstructEditableDesignH5,
   captureHighFidelityFigma,
   exportFigManifest,
@@ -14,6 +15,14 @@ function createDesignRoutes({
       const payload = await readJson(request, 150 * 1024 * 1024);
       const context = getTaskRequestContext("vision");
       const result = await runWithAiProgress(payload, "正在 AI 拆分普通切图和可还原背景", () => planBackgroundDecomposition(payload, context));
+      sendJson(response, 200, result);
+      return true;
+    }
+
+    if (request.method === "POST" && request.url === "/api/design/recognize-region") {
+      const payload = await readJson(request, 150 * 1024 * 1024);
+      const context = getTaskRequestContext("vision");
+      const result = await runWithAiProgress(payload, "正在识别选区文字和样式", () => recognizeTextRegion(payload, context));
       sendJson(response, 200, result);
       return true;
     }

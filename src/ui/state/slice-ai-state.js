@@ -54,7 +54,9 @@ function createSliceTransparencyRestoreState(asset) {
     aiRedrawn: Boolean(asset?.aiRedrawn),
     svgData: asset?.svgData || null,
     aiRedrawnPlacement: asset?.aiRedrawnPlacement ? { ...asset.aiRedrawnPlacement } : null,
-    lastAiOperation: asset?.lastAiOperation || null
+    lastAiOperation: asset?.lastAiOperation || null,
+    backgroundCleanupStatus: asset?.backgroundCleanupStatus || null,
+    compositeCleanupStatus: asset?.compositeCleanupStatus || null
   };
 }
 
@@ -76,11 +78,15 @@ function restoreSliceTransparencyState(asset) {
       ? { ...restoreState.aiRedrawnPlacement }
       : null;
     asset.lastAiOperation = restoreState.lastAiOperation || null;
+    asset.backgroundCleanupStatus = restoreState.backgroundCleanupStatus || null;
+    asset.compositeCleanupStatus = restoreState.compositeCleanupStatus || null;
   } else if (asset.lastAiOperation === "transparent") {
     asset.lastAiOperation = null;
   }
   delete asset.transparencyRestoreState;
   delete asset.transparencyRestoreDataUrl;
+  delete asset.aiTransparentChildSignature;
+  delete asset.aiTransparentExcludedChildCount;
   return true;
 }
 
@@ -98,6 +104,10 @@ function applySliceTransparencyResult(asset, { dataUrl, ai = false } = {}) {
   asset.svgData = null;
   asset.aiRedrawnPlacement = null;
   asset.lastAiOperation = ai ? "transparent" : getSliceBaseAiOperation(asset, restoreState);
+  if (!ai) {
+    delete asset.aiTransparentChildSignature;
+    delete asset.aiTransparentExcludedChildCount;
+  }
   return true;
 }
 

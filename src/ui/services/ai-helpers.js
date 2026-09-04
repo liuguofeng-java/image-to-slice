@@ -38,6 +38,23 @@ function buildAiTransparentPrompt() {
   ].join("\n");
 }
 
+function buildCompositeParentCleanupPrompt(asset, regions) {
+  const localRegions = (Array.isArray(regions) ? regions : []).map((region) => ({
+    x: Math.round(region.x - asset.placement.x),
+    y: Math.round(region.y - asset.placement.y),
+    width: Math.round(region.width),
+    height: Math.round(region.height)
+  }));
+  return [
+    `Create a clean reusable parent background from the sliced asset named "${asset?.name || "ui_asset"}".`,
+    "The white mask rectangles are confirmed child layers that will be placed separately.",
+    `Remove every child-layer pixel inside these slice-local rectangles: ${JSON.stringify(localRegions)}.`,
+    "Inside the rectangles, reconstruct only the parent background by continuing its colors, gradient, border, glow, texture, lighting, and perspective.",
+    "Do not keep, redraw, regenerate, or invent any text, icon, product image, symbol, label, or foreground object inside the masked rectangles.",
+    "Outside the rectangles, preserve the source pixels exactly. Keep the original canvas dimensions and avoid seams, halos, duplicated content, and rectangular patch edges."
+  ].join("\n");
+}
+
 function buildAiCompletePrompt(asset, regions) {
   const localRegions = regions.map((region) => ({
     x: Math.round(region.x - asset.placement.x),
@@ -89,6 +106,7 @@ if (typeof module !== "undefined") {
     buildAiCompletePrompt,
     buildAiRedrawPrompt,
     buildAiTransparentPrompt,
+    buildCompositeParentCleanupPrompt,
     buildBackgroundRestorePrompt,
     createAiProgressId,
     formatAiRedrawError

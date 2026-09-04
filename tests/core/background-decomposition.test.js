@@ -26,6 +26,8 @@ test("background decomposition prompt preserves integrated artistic content", ()
   assert.match(prompt, /raster-overlay/);
   assert.match(prompt, /"assets"/);
   assert.match(prompt, /"backgrounds"/);
+  assert.match(prompt, /"texts"/);
+  assert.match(prompt, /only detect editable ordinary text inside/i);
   assert.match(prompt, /lowercase snake_case/);
   assert.match(prompt, /icon, avatar, illustration, photo, product-image, complex-decoration, complex-chart, logo/);
   assert.match(prompt, /Return JSON only/);
@@ -105,8 +107,42 @@ test("background decomposition parser clamps candidates and overlays", () => {
         confidence: 0,
         reason: "navigation"
       }]
-    }]
+    }],
+    texts: []
   });
+});
+
+test("background decomposition returns editable text only when fully contained by its parent background", () => {
+  const result = parseUiDecompositionText(JSON.stringify({
+    assets: [{
+      name: "shoe_icon",
+      kind: "icon",
+      parentBackgroundId: "tile",
+      bbox: { x: 20, y: 20, width: 30, height: 30 }
+    }],
+    backgrounds: [{ id: "tile", name: "shoe_tile", bbox: { x: 10, y: 10, width: 80, height: 80 }, overlays: [] }],
+    texts: [
+      {
+        id: "shoe-label",
+        name: "shoe_label",
+        parentBackgroundId: "tile",
+        bbox: { x: 20, y: 60, width: 40, height: 20 },
+        confidence: 0.9,
+        text: { characters: "鞋子", fontSize: 18, lineHeight: 22, textAlignHorizontal: "CENTER" }
+      },
+      {
+        id: "outside",
+        parentBackgroundId: "tile",
+        bbox: { x: 80, y: 80, width: 30, height: 20 },
+        text: { characters: "越界" }
+      }
+    ]
+  }), { width: 120, height: 120 });
+
+  assert.equal(result.assets[0].parentBackgroundId, "tile");
+  assert.equal(result.texts.length, 1);
+  assert.equal(result.texts[0].text.characters, "鞋子");
+  assert.equal(result.texts[0].parentBackgroundId, "tile");
 });
 
 test("background decomposition parser filters invalid kinds and overlays outside the background", () => {

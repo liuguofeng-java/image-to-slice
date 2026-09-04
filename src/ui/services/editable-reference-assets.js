@@ -1,5 +1,6 @@
 function createEditableAssetDescriptors(localAssets = []) {
   const ids = new Set();
+  const parentIds = new Set(localAssets.map((asset) => String(asset?.parentId || "")).filter(Boolean));
   return localAssets.map((asset) => {
     const id = String(asset?.id || "").trim();
     if (!id) {
@@ -14,6 +15,10 @@ function createEditableAssetDescriptors(localAssets = []) {
       name: String(asset.name || id),
       kind: String(asset.kind || asset.type || "asset"),
       type: String(asset.type || "image"),
+      contentType: String(asset.contentType || "image"),
+      parentId: asset.parentId || null,
+      hasChildren: parentIds.has(id),
+      ...(asset.contentType === "text" ? { text: { ...(asset.text || {}) } } : {}),
       radius: Number(asset.radius) || 0,
       ...(asset.radii && typeof asset.radii === "object" ? {
         radii: normalizeEditableAssetRadii(asset.radii)
@@ -25,7 +30,7 @@ function createEditableAssetDescriptors(localAssets = []) {
 
 function selectCanonicalReferenceAssets(canonicalHtml, localAssets = []) {
   const referencedIds = new Set(
-    [...String(canonicalHtml || "").matchAll(/\bdata-reference-asset=(["'])(.*?)\1/gi)]
+    [...String(canonicalHtml || "").matchAll(/\bdata-reference-(?:asset|text)=(["'])(.*?)\1/gi)]
       .map((match) => decodeHtmlAttribute(match[2]))
   );
   return localAssets.filter((asset) => referencedIds.has(String(asset?.id || "")));
@@ -110,6 +115,18 @@ function createEditablePreviewContextSignature(context = {}) {
     append(asset?.name);
     append(asset?.kind);
     append(asset?.type);
+    append(asset?.contentType);
+    append(asset?.parentId);
+    append(asset?.text?.characters);
+    append(asset?.text?.fontFamily);
+    append(asset?.text?.fontWeight);
+    append(asset?.text?.fontSize);
+    append(asset?.text?.lineHeight);
+    append(asset?.text?.letterSpacing);
+    append(asset?.text?.color);
+    append(asset?.text?.textAlignHorizontal);
+    append(asset?.text?.strokeColor);
+    append(asset?.text?.strokeWidth);
     append(asset?.radius);
     append(asset?.radii?.topLeft);
     append(asset?.radii?.topRight);
@@ -219,7 +236,7 @@ function buildReferenceAssetCorrectionCss(corrections = []) {
   return corrections.map((item) => {
     const id = escapeCssAttributeValue(item.id);
     return [
-      `.screen [data-reference-asset="${id}"]{`,
+      `.screen [data-reference-asset="${id}"],.screen [data-reference-text="${id}"]{`,
       `width:${normalizeCorrectionNumber(item.width)}px!important;`,
       `height:${normalizeCorrectionNumber(item.height)}px!important;`,
       `border-radius:${formatEditableAssetRadius(item)}!important;`,

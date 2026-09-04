@@ -48,6 +48,58 @@ function normalizeConfidence(value) {
   return Number.isFinite(number) ? clamp(number, 0, 1) : null;
 }
 
+function normalizeTextCandidate(entry, background, index) {
+  if (!background) return null;
+  const rawBox = entry?.bbox;
+  const values = [rawBox?.x, rawBox?.y, rawBox?.width, rawBox?.height].map(Number);
+  if (!values.every(Number.isFinite)) return null;
+  const [x, y, width, height] = values;
+  if (
+    x < background.bbox.x
+    || y < background.bbox.y
+    || x + width > background.bbox.x + background.bbox.width
+    || y + height > background.bbox.y + background.bbox.height
+  ) return null;
+  const bbox = normalizeBox(rawBox, background.bbox, MIN_OVERLAY_SIZE);
+  const characters = String(entry?.text?.characters ?? entry?.characters ?? "").trim().slice(0, 2000);
+  if (!bbox || !characters) return null;
+  const text = entry?.text && typeof entry.text === "object" ? entry.text : entry;
+  const shadow = text.shadow && typeof text.shadow === "object" ? text.shadow : null;
+  return {
+    id: String(entry?.id || "").trim().slice(0, 120) || `text_${String(index + 1).padStart(2, "0")}`,
+    name: normalizeSliceAssetName(entry?.name) || `text_${String(index + 1).padStart(2, "0")}`,
+    parentBackgroundId: background.id,
+    bbox,
+    confidence: normalizeConfidence(entry?.confidence),
+    reason: String(entry?.reason || "").trim().slice(0, 300),
+    text: {
+      characters,
+      fontSize: clamp(Number(text.fontSize) || 16, 1, 512),
+      fontWeight: clamp(Number(text.fontWeight) || 400, 100, 900),
+      fontFamily: String(text.fontFamily || "").trim().slice(0, 120),
+      lineHeight: clamp(
+        Number(text.lineHeight) > 5 ? Number(text.lineHeight) : (Number(text.lineHeight) || 1.2) * (Number(text.fontSize) || 16),
+        Number(text.fontSize) || 16,
+        240
+      ),
+      letterSpacing: clamp(Number(text.letterSpacing) || 0, -20, 100),
+      color: String(text.color || "#000000").trim().slice(0, 32),
+      textAlignHorizontal: ["LEFT", "CENTER", "RIGHT", "JUSTIFIED"].includes(String(text.textAlignHorizontal || "").toUpperCase())
+        ? String(text.textAlignHorizontal).toUpperCase()
+        : "CENTER",
+      strokeColor: String(text.strokeColor || "").trim().slice(0, 32),
+      strokeWidth: clamp(Number(text.strokeWidth) || 0, 0, 50),
+      shadow: shadow ? {
+        color: String(shadow.color || "#000000").trim().slice(0, 32),
+        opacity: clamp(Number(shadow.opacity) || 0, 0, 1),
+        x: clamp(Number(shadow.x) || 0, -100, 100),
+        y: clamp(Number(shadow.y) || 0, -100, 100),
+        blur: clamp(Number(shadow.blur) || 0, 0, 200)
+      } : null
+    }
+  };
+}
+
 function parseBackgroundDecompositionText(text, { width, height }) {
   const sourceWidth = Math.round(Number(width));
   const sourceHeight = Math.round(Number(height));
@@ -92,7 +144,15 @@ function parseBackgroundDecompositionText(text, { width, height }) {
         overlays
       });
     });
-  return { backgrounds };
+  const backgroundById = new Map(backgrounds.map((background) => [background.id, background]));
+  const texts = (Array.isArray(value?.texts) ? value.texts : [])
+    .map((entry, index) => normalizeTextCandidate(
+      entry,
+      backgroundById.get(String(entry?.parentBackgroundId || "").trim()),
+      index
+    ))
+    .filter(Boolean);
+  return { backgrounds, texts };
 }
 
 module.exports = {

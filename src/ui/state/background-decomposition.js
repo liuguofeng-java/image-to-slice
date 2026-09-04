@@ -64,6 +64,7 @@ function createBackgroundDecompositionReview(plan, screen) {
   return {
     screen: normalizedScreen,
     activeBackgroundId: backgrounds[0]?.id || null,
+    texts: Array.isArray(plan?.texts) ? plan.texts.map((entry) => ({ ...entry })) : [],
     backgrounds
   };
 }
@@ -83,7 +84,7 @@ function normalizeCachedBackgroundDecomposition(review, source) {
     || !Array.isArray(review.backgrounds)
   ) return null;
   const normalized = createBackgroundDecompositionReview(
-    { backgrounds: review.backgrounds },
+    { backgrounds: review.backgrounds, texts: review.texts },
     { width: source.width, height: source.height }
   );
   normalized.backgrounds = normalized.backgrounds.map((background, backgroundIndex) => {

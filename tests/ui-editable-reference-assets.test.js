@@ -27,9 +27,12 @@ test("descriptor projection keeps geometry and removes image bytes", () => {
   assert.deepEqual(descriptors, [{
     id: "logo",
     name: "Logo",
-    kind: "logo",
-    type: "image",
-    radius: 6,
+      kind: "logo",
+      type: "image",
+      contentType: "image",
+      parentId: null,
+      hasChildren: false,
+      radius: 6,
     placement: { x: 10, y: 20, width: 30, height: 40 }
   }]);
   assert.equal(JSON.stringify(descriptors).includes("base64"), false);

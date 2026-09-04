@@ -5,6 +5,7 @@ const {
   buildAiCompletePrompt,
   buildAiRedrawPrompt,
   buildAiTransparentPrompt,
+  buildCompositeParentCleanupPrompt,
   buildBackgroundRestorePrompt,
   createAiProgressId,
   formatAiRedrawError
@@ -36,6 +37,17 @@ test("buildAiRedrawPrompt includes asset name and viewBox size", () => {
 test("buildAiTransparentPrompt preserves exact transparent PNG instruction", () => {
   assert.equal(buildAiTransparentPrompt().includes("Only remove the background and make it transparent."), true);
   assert.equal(buildAiTransparentPrompt().includes("Output one transparent PNG"), true);
+});
+
+test("buildCompositeParentCleanupPrompt removes child text from the parent image", () => {
+  const prompt = buildCompositeParentCleanupPrompt({
+    name: "slice_01",
+    placement: { x: 100, y: 200 }
+  }, [{ x: 120, y: 230, width: 60, height: 24 }]);
+
+  assert.match(prompt, /\[\{"x":20,"y":30,"width":60,"height":24\}\]/);
+  assert.match(prompt, /Do not keep, redraw, regenerate, or invent any text, icon/);
+  assert.match(prompt, /reconstruct only the parent background/);
 });
 
 test("buildAiCompletePrompt converts regions to slice-local rectangles", () => {

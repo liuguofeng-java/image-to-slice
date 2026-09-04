@@ -7,6 +7,13 @@ function sanitizeFastGeneratedHtml(html, referenceAssets = [], dimensions = {}) 
   const scaleY = previewHeight / sourceHeight;
   const assets = new Map(referenceAssets.map((asset) => [String(asset?.id || ""), asset]).filter(([id]) => id));
   const seen = new Set();
+  const textClassById = new Map();
+  const fallbackRules = [];
+  referenceAssets.filter((asset) => asset?.contentType === "text").forEach((asset, index) => {
+    const className = `plugin-reference-text-${index + 1}`;
+    textClassById.set(String(asset.id || ""), className);
+    fallbackRules.push(buildFallbackAssetRule(asset, className, scaleX, scaleY));
+  });
 
   let safe = sanitizeGeneratedCss(String(html || ""));
   safe = removeExecutableElements(safe)
@@ -22,21 +29,30 @@ function sanitizeFastGeneratedHtml(html, referenceAssets = [], dimensions = {}) 
   safe = safe.replace(/<img\b[^>]*>/gi, (tag) => {
     const id = readHtmlAttribute(tag, "data-reference-asset");
     const asset = assets.get(id);
-    if (!asset || seen.has(id)) {
+    if (!asset || asset.contentType === "text" || seen.has(id)) {
       return "";
     }
     seen.add(id);
     return buildTrustedAssetTag(asset, tag);
   });
+  safe = safe.replace(/<span\b[^>]*\bdata-reference-text\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)[^>]*>[\s\S]*?<\/span\s*>/gi, (tag) => {
+    const opening = tag.match(/^<span\b[^>]*>/i)?.[0] || "";
+    const id = readHtmlAttribute(opening, "data-reference-text");
+    const asset = assets.get(id);
+    if (!asset || asset.contentType !== "text" || seen.has(id)) return "";
+    seen.add(id);
+    return buildTrustedTextTag(asset, opening, textClassById.get(id));
+  });
   safe = ensureFastPreviewShell(safe);
 
   const missingAssets = referenceAssets.filter((asset) => asset?.id && asset?.placement && !seen.has(String(asset.id)));
-  const fallbackRules = [];
   if (missingAssets.length) {
     const fallbackTags = missingAssets.map((asset, index) => {
       const className = `plugin-reference-fallback-${index + 1}`;
-      fallbackRules.push(buildFallbackAssetRule(asset, className, scaleX, scaleY));
-      return buildFallbackAssetTag(asset, className);
+      if (asset.contentType !== "text") fallbackRules.push(buildFallbackAssetRule(asset, className, scaleX, scaleY));
+      return asset.contentType === "text"
+        ? buildFallbackTextTag(asset, textClassById.get(String(asset.id || "")) || className)
+        : buildFallbackAssetTag(asset, className);
     }).join("\n");
     safe = injectAfterScreenOpen(safe, `\n${fallbackTags}\n`);
     missingAssets.forEach((asset) => seen.add(String(asset.id)));
@@ -50,6 +66,7 @@ function sanitizeFastGeneratedHtml(html, referenceAssets = [], dimensions = {}) 
     `.screen{width:${previewWidth}px!important;min-width:${previewWidth}px!important;height:${previewHeight}px!important;min-height:${previewHeight}px!important;max-width:none;overflow:hidden;position:relative;flex:0 0 auto!important;padding:0!important;border:0!important;transform:none!important;}`,
     "img{display:block;}",
     ".screen [data-reference-asset]{position:absolute!important;object-fit:contain!important;object-position:center!important;background:transparent!important;}",
+    ".screen [data-reference-text]{position:absolute!important;display:block!important;margin:0!important;white-space:pre!important;}",
     ...fallbackRules,
     "</style>"
   ].join("");
@@ -180,6 +197,16 @@ function buildFallbackAssetTag(asset, className) {
   return `<img class="plugin-reference-fallback ${className}" src="asset:${id}" alt="${alt}" data-reference-asset="${id}">`;
 }
 
+function buildTrustedTextTag(asset, originalTag, requiredClass = "") {
+  const className = sanitizeHtmlClassList([readHtmlAttribute(originalTag, "class"), requiredClass].filter(Boolean).join(" "));
+  const classAttribute = className ? ` class="${escapeHtmlAttribute(className)}"` : "";
+  return `<span${classAttribute} data-reference-text="${escapeHtmlAttribute(asset.id)}">${escapeHtmlText(asset.text?.characters || "")}</span>`;
+}
+
+function buildFallbackTextTag(asset, className) {
+  return `<span class="plugin-reference-fallback ${className}" data-reference-text="${escapeHtmlAttribute(asset.id || "")}">${escapeHtmlText(asset.text?.characters || "")}</span>`;
+}
+
 function buildFallbackAssetRule(asset, className, scaleX, scaleY) {
   const placement = asset.placement || {};
   const left = Math.round(Number(placement.x || 0) * scaleX);
@@ -187,7 +214,30 @@ function buildFallbackAssetRule(asset, className, scaleX, scaleY) {
   const width = Math.max(1, Math.round(Number(placement.width || 1) * scaleX));
   const height = Math.max(1, Math.round(Number(placement.height || 1) * scaleY));
   const radius = Math.max(0, Math.round(Number(asset.radius || 0) * Math.min(scaleX, scaleY)));
+  if (asset.contentType === "text") {
+    const text = asset.text || {};
+    const fontSize = Math.max(8, Number(text.fontSize || 16) * Math.min(scaleX, scaleY));
+    const lineHeight = Math.max(fontSize, Number(text.lineHeight || fontSize * 1.2) * Math.min(scaleX, scaleY));
+    const align = String(text.textAlignHorizontal || "CENTER").toLowerCase();
+    const strokeWidth = Math.max(0, Number(text.strokeWidth || 0) * Math.min(scaleX, scaleY));
+    const shadow = text.shadow ? `${Number(text.shadow.x || 0)}px ${Number(text.shadow.y || 0)}px ${Number(text.shadow.blur || 0)}px ${hexToRgbaCss(text.shadow.color, text.shadow.opacity)}` : "none";
+    return `.${className}{position:absolute!important;left:${left}px!important;top:${top}px!important;width:${width}px!important;height:${height}px!important;font-size:${fontSize}px!important;line-height:${lineHeight}px!important;font-weight:${Number(text.fontWeight || 600)}!important;letter-spacing:${Number(text.letterSpacing || 0)}px!important;color:${text.color || "#FFFFFF"}!important;text-align:${align}!important;-webkit-text-stroke:${strokeWidth}px ${text.strokeColor || "#000000"};text-shadow:${shadow};white-space:pre!important;z-index:901;}`;
+  }
   return `.${className}{position:absolute!important;left:${left}px!important;top:${top}px!important;width:${width}px!important;height:${height}px!important;border-radius:${radius}px!important;object-fit:contain!important;z-index:900;}`;
+}
+
+function hexToRgbaCss(color, opacity) {
+  const match = String(color || "").match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+  if (!match) return String(color || "#000000");
+  const alpha = Math.min(1, Math.max(0, Number.isFinite(Number(opacity)) ? Number(opacity) : 1));
+  return `rgba(${parseInt(match[1], 16)},${parseInt(match[2], 16)},${parseInt(match[3], 16)},${alpha})`;
+}
+
+function escapeHtmlText(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 function sanitizeHtmlClassList(value) {

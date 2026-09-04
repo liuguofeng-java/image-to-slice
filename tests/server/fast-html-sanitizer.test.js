@@ -157,6 +157,38 @@ test("fast sanitizer injects missing known anchors and reports the fallback", ()
   assert.deepEqual(result.qualityWarnings, ["模型遗漏 1 个切图锚点，已按人工坐标补入。"]);
 });
 
+test("fast sanitizer preserves authoritative editable text and injects its visual style", () => {
+  const result = sanitizeFastGeneratedHtml(
+    `<html><head></head><body><div class="screen"><span class="shoe" data-reference-text="label">错误内容</span></div></body></html>`,
+    [{
+      id: "label",
+      name: "shoe_label",
+      contentType: "text",
+      placement: { x: 20, y: 30, width: 80, height: 28 },
+      text: {
+        characters: "鞋子",
+        fontSize: 20,
+        lineHeight: 24,
+        fontWeight: 700,
+        letterSpacing: 1,
+        color: "#FFFFFF",
+        textAlignHorizontal: "CENTER",
+        strokeColor: "#000000",
+        strokeWidth: 1,
+        shadow: { color: "#000000", opacity: 0.4, x: 0, y: 2, blur: 4 }
+      }
+    }],
+    dimensions
+  );
+
+  assert.equal(result.missingReferenceAnchorCount, 0);
+  assert.match(result.html, /data-reference-text="label">鞋子<\/span>/);
+  assert.match(result.html, /plugin-reference-text-1/);
+  assert.match(result.html, /font-size:20px!important/);
+  assert.match(result.html, /rgba\(0,0,0,0\.4\)/);
+  assert.doesNotMatch(result.html, /错误内容/);
+});
+
 test("fast sanitizer emits canonical anchors for all 60 descriptors", () => {
   const assets = Array.from({ length: 60 }, (_, index) => ({
     id: `asset_${index}`,

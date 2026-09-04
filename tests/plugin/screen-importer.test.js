@@ -90,6 +90,57 @@ test("createUiAssetScreen imports selected assets and records plugin data", asyn
   assert.deepEqual(figmaApi.currentPage.selection, [frame]);
 });
 
+test("createUiAssetScreen imports editable text and groups a composite background with its children", async () => {
+  const frame = createNode("FRAME");
+  const grouped = [];
+  const figmaApi = {
+    currentPage: { children: [], selection: [] },
+    viewport: { center: { x: 0, y: 0 }, scrollAndZoomIntoView() {} },
+    createFrame: () => frame,
+    createRectangle: () => createNode("RECTANGLE"),
+    createText: () => createNode("TEXT"),
+    createImage: () => ({ hash: "image-hash" }),
+    base64Decode: () => new Uint8Array([1]),
+    loadFontAsync: async () => {},
+    group(nodes, parent) {
+      const group = createNode("GROUP");
+      group.children = [...nodes];
+      parent.children = parent.children.filter((node) => !nodes.includes(node));
+      parent.children.push(group);
+      grouped.push(group);
+      return group;
+    }
+  };
+  const image = (id, name, contentType, placement, parentId = null) => ({
+    id, name, contentType, parentId, placement, selected: true,
+    dataUrl: "data:image/png;base64,AQ=="
+  });
+
+  await createUiAssetScreen({
+    figmaApi,
+    notifyRecoverableError() {},
+    manifest: {
+      screen: { name: "Composite", width: 120, height: 120 },
+      previewImage: { dataUrl: "data:image/png;base64,AQ==" },
+      assets: [
+        image("tile", "shoe_tile", "background", { x: 10, y: 10, width: 100, height: 100 }),
+        image("icon", "shoe_icon", "image", { x: 35, y: 25, width: 50, height: 50 }, "tile"),
+        {
+          id: "label", name: "shoe_label", contentType: "text", parentId: "tile", selected: true,
+          placement: { x: 30, y: 80, width: 60, height: 20 },
+          text: { characters: "鞋子", fontSize: 16, lineHeight: 20, fontWeight: 700, color: "#FFFFFF", textAlignHorizontal: "CENTER" }
+        }
+      ]
+    }
+  });
+
+  assert.equal(grouped.length, 1);
+  assert.equal(grouped[0].name, "shoe_tile_group");
+  assert.deepEqual(grouped[0].children.map((node) => node.type), ["RECTANGLE", "RECTANGLE", "TEXT"]);
+  assert.equal(grouped[0].children[2].characters, "鞋子");
+  assert.equal(grouped[0].children[2].exportSettings, undefined);
+});
+
 test("createEditableDesignScreen imports editable nodes and optional source reference", async () => {
   const frames = [createNode("FRAME")];
   const rectangles = [];

@@ -41,12 +41,37 @@ test("validateManifest requires numeric screen dimensions and assets array", () 
 test("validateManifest requires each asset placement and image or SVG data", () => {
   assert.throws(
     () => validateManifest(createValidAssetManifest({ assets: [{ name: "bad", placement: { x: 0, y: 0, width: 1, height: 1 } }] })),
-    /每个 asset 必须包含 name、placement、dataUrl 或 svgData/
+    /每个 asset 必须包含 name、placement，以及图片、SVG 或可编辑文字数据/
   );
   assert.throws(
     () => validateManifest(createValidAssetManifest({ assets: [{ name: "bad", placement: { x: 0, y: Number.NaN, width: 1, height: 1 }, dataUrl: "x" }] })),
     /asset bad 的 placement 坐标必须是数字/
   );
+});
+
+test("validateManifest accepts editable text and rejects invalid composite parents", () => {
+  const background = {
+    id: "tile",
+    name: "tile",
+    contentType: "background",
+    placement: { x: 0, y: 0, width: 100, height: 100 },
+    dataUrl: "data:image/png;base64,abc"
+  };
+  const label = {
+    id: "label",
+    name: "label",
+    contentType: "text",
+    parentId: "tile",
+    placement: { x: 10, y: 60, width: 60, height: 20 },
+    text: { characters: "鞋子" }
+  };
+  assert.doesNotThrow(() => validateManifest(createValidAssetManifest({ assets: [background, label] })));
+  assert.doesNotThrow(() => validateManifest(createValidAssetManifest({
+    assets: [{ ...background, contentType: "image" }, label]
+  })));
+  assert.throws(() => validateManifest(createValidAssetManifest({
+    assets: [background, { ...label, placement: { x: 90, y: 90, width: 20, height: 20 } }]
+  })), /必须完整位于父级范围内/);
 });
 
 test("validateEditableDesignManifest accepts a valid editable design manifest", () => {

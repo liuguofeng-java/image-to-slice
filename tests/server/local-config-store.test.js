@@ -119,5 +119,7 @@ test("saveLocalConfig writes pretty JSON with trailing newline and private mode"
     },
     updatedAt: "2026-07-23T01:02:03.000Z"
   });
-  assert.equal(fs.statSync(configFile).mode & 0o777, 0o600);
+  if (process.platform !== "win32") {
+    assert.equal(fs.statSync(configFile).mode & 0o777, 0o600);
+  }
 });

@@ -30,14 +30,14 @@ function formatInspectorElementLabel(element, referenceAssets = []) {
 
 function readInspectorImageAsset(element, referenceAssets = []) {
   const tag = String(element?.localName || element?.tagName || "").toLowerCase();
-  if (tag !== "img" || typeof element?.getAttribute !== "function") return null;
-  const id = String(element.getAttribute("data-reference-asset") || "");
+  if (typeof element?.getAttribute !== "function") return null;
+  const id = String(element.getAttribute("data-reference-asset") || element.getAttribute("data-reference-text") || "");
   if (!id) return null;
   const referenceAsset = referenceAssets.find((asset) => String(asset?.id || "") === id);
   return {
     id,
     name: String(referenceAsset?.name || element.getAttribute("alt") || id),
-    dataUrl: String(referenceAsset?.dataUrl || element.getAttribute("src") || "")
+    dataUrl: tag === "img" ? String(referenceAsset?.dataUrl || element.getAttribute("src") || "") : ""
   };
 }
 
@@ -54,8 +54,7 @@ function findInspectorElement(target, screenElement) {
 function findInspectorReferenceAssetElement(target, screenElement) {
   let element = target;
   while (element) {
-    const tag = String(element.localName || element.tagName || "").toLowerCase();
-    if (tag === "img" && element.getAttribute?.("data-reference-asset")) {
+    if (element.getAttribute?.("data-reference-asset") || element.getAttribute?.("data-reference-text")) {
       return screenElement?.contains?.(element) ? element : null;
     }
     if (element === screenElement) break;
@@ -65,10 +64,10 @@ function findInspectorReferenceAssetElement(target, screenElement) {
 }
 
 function findInspectorReferenceAssetAtPoint(screenElement, clientX, clientY) {
-  const images = Array.from(screenElement?.querySelectorAll?.("img[data-reference-asset]") || []);
-  for (let index = images.length - 1; index >= 0; index -= 1) {
-    const image = images[index];
-    const rect = image.getBoundingClientRect?.();
+  const anchors = Array.from(screenElement?.querySelectorAll?.("[data-reference-asset],[data-reference-text]") || []);
+  for (let index = anchors.length - 1; index >= 0; index -= 1) {
+    const anchor = anchors[index];
+    const rect = anchor.getBoundingClientRect?.();
     if (
       rect
       && clientX >= rect.left
@@ -76,7 +75,7 @@ function findInspectorReferenceAssetAtPoint(screenElement, clientX, clientY) {
       && clientY >= rect.top
       && clientY <= rect.bottom
     ) {
-      return image;
+      return anchor;
     }
   }
   return null;
@@ -88,8 +87,9 @@ function canDeleteInspectorElement(element, screenElement) {
     || !screenElement
     || element === screenElement
     || !screenElement.contains?.(element)
-    || element.matches?.(".fit-shell,.fit-box,[data-reference-asset]")
+    || element.matches?.(".fit-shell,.fit-box,[data-reference-asset],[data-reference-text]")
     || element.querySelector?.("[data-reference-asset]")
+    || element.querySelector?.("[data-reference-text]")
   ) {
     return false;
   }

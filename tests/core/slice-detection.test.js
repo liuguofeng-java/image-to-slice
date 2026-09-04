@@ -51,6 +51,7 @@ test("parseSliceAssetDetectionText parses and clamps valid model assets", () => 
         bbox: { x: 0, y: 10, width: 29, height: 24 },
         confidence: 1,
         containsEmbeddedText: true,
+        parentBackgroundId: null,
         reason: "brand mark"
       }
     ]
