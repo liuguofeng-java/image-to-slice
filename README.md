@@ -13,7 +13,7 @@ GPT Image2 这类模型生成的 UI 效果图观感确实很不错，但直接�
 市面上的图片拆解工具大多以“通用拆图”为目标，主要面向两类需求：
 
 - **AI分层/拆图解决“这张海报应该怎样重新编辑”**：服务于海报、电商等平面设计，让画面元素可以分别编辑，通常导出 PSD 或分层素材。
-- **AI抠图解决“我只想留下这个主体”**：从人物、商品或物体图片中去除背景，得到透明的独立素材。
+- **智能抠图解决“我只想留下这个主体”**：本地 SAM 2 结合色域魔棒和画笔，从人物、商品或物体图片中得到透明的独立素材。
 
 但 App、网页和软件界面不仅需要分层，还要判断元素应该如何开发。例如，海报中的艺术字应拆成可编辑图层；在 UI 切图中，则更适合作为图片资产保留完整视觉效果。
 
@@ -241,6 +241,7 @@ ZIP。解压后直接在浏览器打开 `index.html`，可继续在浏览器开�
 - npm。
 - 一个 OpenAI 兼容 API。可以使用官方 OpenAI，也可以使用提供兼容接口的其他服务。
 - 如果使用 AI 图层导入的高保真捕获功能，需要额外安装 Playwright Chromium。
+- 如果使用 **智能抠图**，需要在当前项目相邻目录安装 SAM 2，并准备 `sam2.1_hiera_tiny.pt`；也可以使用环境变量指定自定义位置。
 
 ### 1. 安装依赖
 
@@ -255,7 +256,17 @@ npx playwright install chromium
 `npx playwright install chromium` 只服务于可选的高保真导入。普通切图、AI 图层预览、下载 HTML 和默认 DOM 捕获不需要安装
 Chromium；本地 API 服务仍需要通过 `npm install` 安装项目依赖。
 
-### 2. 启动本地 API 服务
+### 2. 启动本地服务
+
+同时启动本地 API 和浏览器模拟页面：
+
+```bash
+npm start
+```
+
+浏览器打开 `http://127.0.0.1:4173/figma-sim.html`。按 `Ctrl+C` 会同时停止两个服务。
+
+如果只需要启动本地 API：
 
 ```bash
 npm run api
@@ -288,7 +299,46 @@ macOS 和 Windows 也可以运行项目根目录中的一键脚本：
 
 使用插件期间不要关闭运行 API 服务的终端窗口。
 
-### 3. 使用独立网页模式
+### 3. 本地 SAM 2 智能抠图
+
+默认从当前项目相邻的 `../sam2-main` 查找 SAM 2，并使用 CPU 与 `checkpoints/sam2.1_hiera_tiny.pt`。`npm start` 会按需管理持久 Python worker，不需要单独启动 Python 服务。
+
+```bash
+npm run sam2:check
+```
+
+检查会真实加载 tiny 模型，并执行一次三候选分割和一次连续提示点细化。自定义安装位置或 Python 时可设置：
+
+```text
+SAM2_ROOT=D:\project\sam2-main
+SAM2_PYTHON=C:\path\to\python.exe
+```
+
+在切图列表选择 **透明 → 智能抠图**。左键添加主体点，`Alt+单击` 添加排除点；也可以切换 Lab 色域魔棒、保留/排除画笔，并调整填洞、扩展/收缩、羽化与边缘去杂色。SAM 2 不可用时，魔棒和画笔仍可独立使用。
+
+### 4. 本地局部修复与高清化
+
+局部修复默认从相邻的 `../IOPaint` 加载 LaMa，高清化从 `../Real-ESRGAN` 加载动漫 6B 模型。两者都由 `npm start` 按需启动并复用同一个 CPU worker，不需要另开端口：
+
+```bash
+npm run local-ai:check
+```
+
+默认权重位置：
+
+```text
+C:\path\to\IOPaint\models\big-lama.pt
+C:\Users\<用户名>\.cache\torch\hub\checkpoints\big-lama.pt
+D:\project\Real-ESRGAN\weights\RealESRGAN_x4plus_anime_6B.pth
+```
+
+LaMa 会优先读取 IOPaint 项目中的 `models/big-lama.pt`，不存在时再检查用户缓存目录。
+
+也可以通过 `IOPAINT_ROOT`、`REALESRGAN_ROOT`、`LOCAL_IMAGE_PYTHON`、`LAMA_MODEL_PATH` 和 `REALESRGAN_MODEL_PATH` 覆盖。检查命令会分别执行一次真实 LaMa 修复和 Real-ESRGAN 2× 推理；某个模型缺失时会继续检查另一个模型，并逐项报告结果。
+
+在资产列表打开 **处理** 菜单即可进入 **局部修复** 或 **高清化**。局部修复用红色选区标记要删除的文字或杂物；高清化支持 2×、4×，只增加位图像素，不改变 Figma 中的宽高和位置。提交后可以关闭编辑器继续处理其他资产，列表会显示各任务的排队、运行、完成或失败状态。
+
+### 5. 使用独立网页模式
 
 如果不安装 Figma 插件，可以在 API 服务运行时打开项目网页。完成拆图或 AI 图层预览后：
 
@@ -299,7 +349,7 @@ macOS 和 Windows 也可以运行项目根目录中的一键脚本：
 独立网页模式仍然需要本项目的 API 服务生成 `.fig`；浏览器本身不会调用 `figma.createFrame()`。简单 SVG 会保留为可编辑
 Vector，包含渐变、蒙版、滤镜等复杂特性的 SVG 会自动转为图片节点，以避免整个文件导出失败。
 
-### 4. 在 Figma Desktop 加载开发插件
+### 6. 在 Figma Desktop 加载开发插件
 
 1. 打开 Figma Desktop。
 2. 打开 `Plugins > Development > Import plugin from manifest...`。
@@ -443,7 +493,7 @@ API Key 不通过这些环境变量强制配置，而是在插件“设置”中
 3. 填写模型 ID 和 API Key。
 4. 选择用途：
     - **图片理解**：AI 拆图、AI 图层导入和 SVG 理解。
-    - **图片生成 / 修补**：文生图、图生图、AI 透明、背景还原、AI 补齐和局部修复。
+    - **图片生成 / 修补**：文生图、图生图、背景还原、AI 补齐、局部修复，以及旧 AI 透明结果的兼容处理；新版智能抠图的主体分割在本地运行。
 5. 设置超时时间，范围为 `30–1800` 秒。
 6. 点击 **测试**，确认接口可用后点击 **保存并生效**。
 
@@ -512,7 +562,7 @@ npm test
 npm run preview
 ```
 
-如需开发调试，可打开 `http://127.0.0.1:4173/figma-sim.html`。该页面仅用于模拟 Figma Desktop 画布进行测试，不属于项目的正式使用方式。
+`npm run preview` 使用项目已有的 Vite，不再依赖 Python。如需开发调试，可打开 `http://127.0.0.1:4173/figma-sim.html`。该页面仅用于模拟 Figma Desktop 画布进行测试，不属于项目的正式使用方式。
 
 提交前建议执行：
 
@@ -581,6 +631,12 @@ curl http://127.0.0.1:18787/health
 ```
 
 如果要换端口，服务端可以设置 `PORT`，但当前插件 UI 默认仍请求 `127.0.0.1:18787`。要让插件使用其他端口，需要同步修改客户端地址并重新构建。
+
+## Vue 3 + TypeScript 迁移
+
+工程正在分阶段迁移，目前已接入 Vue 资产列表、Pinia 列表/任务状态及严格类型检查，**尚未完成全量 Vue/TS 改造**。其他界面和插件主线程暂保留原实现，现有草稿与后端接口不变。
+
+迁移边界、验证范围及启动方式见 [Vue 迁移进度](docs/vue-migration.md)。新增 `npm run typecheck`、`npm run test:vue` 和 `npm run test:e2e`；`npm test` 包含原有测试与新增 Vue 测试。修改 Vue 组件后暂需运行 `npm run build:ui` 并刷新。
 
 ## 关于我
 

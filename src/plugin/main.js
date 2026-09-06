@@ -1,5 +1,5 @@
 const {
-  DEFAULT_UI_WINDOW
+  FULLSCREEN_UI_WINDOW
 } = require("./ui-window-state");
 const {
   createUiRuntime
@@ -15,7 +15,11 @@ const {
   bindFigmaFrameExportSelectionState
 } = require("./figma-frame-export-selection");
 
-figma.showUI(__html__, { width: DEFAULT_UI_WINDOW.width, height: DEFAULT_UI_WINDOW.height, themeColors: true });
+figma.showUI(__html__, {
+  width: FULLSCREEN_UI_WINDOW.width,
+  height: FULLSCREEN_UI_WINDOW.height,
+  themeColors: true
+});
 
 const uiRuntime = createUiRuntime(figma);
 const screenImportRuntime = createScreenImportRuntime({
@@ -30,10 +34,6 @@ const screenImportRuntime = createScreenImportRuntime({
 const publishFigmaFrameExportSelectionState = bindFigmaFrameExportSelectionState({
   figmaApi: figma,
   postMessage: uiRuntime.safePostMessage
-});
-
-uiRuntime.restoreUiWindowState().catch((error) => {
-  uiRuntime.notifyRecoverableError("窗口状态恢复失败", error);
 });
 
 figma.ui.onmessage = async (message) => {
@@ -54,18 +54,6 @@ figma.ui.onmessage = async (message) => {
 
     if (message.type === "show-notification") {
       uiRuntime.showNotification(message.message);
-    }
-
-    if (message.type === "resize-ui") {
-      uiRuntime.safeResizeUi(message.width, message.height);
-    }
-
-    if (message.type === "save-ui-window-state") {
-      await uiRuntime.saveUiWindowState(message.state);
-    }
-
-    if (message.type === "set-ui-collapsed") {
-      await uiRuntime.setUiCollapsed(Boolean(message.collapsed));
     }
 
     if (message.type === "close") {

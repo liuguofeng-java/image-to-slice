@@ -40,7 +40,7 @@ function renderTaskRoutingView(state) {
     [
       "vision",
       "图片理解",
-      "AI拆图、AI图层导入和 SVG 理解",
+      "AI拆图和 AI图层导入",
       "调用 POST /v1/chat/completions。模型需要支持图片输入。"
     ],
     [

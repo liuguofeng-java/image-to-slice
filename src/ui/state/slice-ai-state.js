@@ -1,5 +1,13 @@
 function hasProcessedSliceResult(asset) {
-  return Boolean(asset?.aiTransparent || asset?.aiRedrawn);
+  return Boolean(asset?.transparent || asset?.aiTransparent || asset?.aiRedrawn || asset?.localInpaintMethod || asset?.upscaleMethod);
+}
+
+function shouldPreserveProcessedSliceResult(asset, geometryChange) {
+  return hasProcessedSliceResult(asset) && ["move", "x", "y"].includes(String(geometryChange || ""));
+}
+
+function shouldRefreshSliceCropAfterPositionRestore(asset) {
+  return !isLockedAiCompleteAsset(asset) && !shouldPreserveProcessedSliceResult(asset, "move");
 }
 
 function isLockedAiCompleteAsset(asset) {
@@ -87,6 +95,10 @@ function restoreSliceTransparencyState(asset) {
   delete asset.transparencyRestoreDataUrl;
   delete asset.aiTransparentChildSignature;
   delete asset.aiTransparentExcludedChildCount;
+  delete asset.cutoutMethod;
+  delete asset.cutoutMaskDataUrl;
+  delete asset.cutoutSettings;
+  delete asset.cutoutSessionSourceSignature;
   return true;
 }
 
@@ -107,6 +119,10 @@ function applySliceTransparencyResult(asset, { dataUrl, ai = false } = {}) {
   if (!ai) {
     delete asset.aiTransparentChildSignature;
     delete asset.aiTransparentExcludedChildCount;
+    delete asset.cutoutMethod;
+    delete asset.cutoutMaskDataUrl;
+    delete asset.cutoutSettings;
+    delete asset.cutoutSessionSourceSignature;
   }
   return true;
 }
@@ -154,10 +170,81 @@ function restoreSliceSvgState(asset) {
   return true;
 }
 
+function createSliceImageProcessingRestoreState(asset) {
+  if (asset?.imageProcessingRestoreState?.dataUrl) {
+    return { ...asset.imageProcessingRestoreState };
+  }
+  return {
+    dataUrl: asset?.dataUrl || "",
+    svgData: asset?.svgData || null,
+    aiRedrawn: Boolean(asset?.aiRedrawn),
+    aiRedrawnPlacement: asset?.aiRedrawnPlacement ? { ...asset.aiRedrawnPlacement } : null,
+    lastAiOperation: asset?.lastAiOperation || null
+  };
+}
+
+function applySliceImageProcessingResult(asset, result = {}) {
+  if (!asset || !result.dataUrl) return false;
+  asset.imageProcessingRestoreState = createSliceImageProcessingRestoreState(asset);
+  asset.dataUrl = result.dataUrl;
+  asset.svgData = null;
+  asset.aiRedrawn = false;
+  asset.aiRedrawnPlacement = null;
+  if (result.operation === "inpaint") {
+    asset.localInpaintMethod = "iopaint-lama";
+    asset.localInpaintMaskDataUrl = result.maskDataUrl || null;
+    asset.localInpaintSourceSignature = result.sourceSignature || "";
+    asset.localInpaintDataUrl = result.dataUrl;
+    asset.lastAiOperation = "localInpaint";
+  }
+  if (result.operation === "upscale") {
+    asset.upscaleMethod = "realesrgan-x4plus-anime-6b";
+    asset.upscaleScale = Number(result.scale) || 2;
+    asset.sourcePixelWidth = Number(result.sourcePixelWidth) || null;
+    asset.sourcePixelHeight = Number(result.sourcePixelHeight) || null;
+    asset.outputPixelWidth = Number(result.outputPixelWidth) || null;
+    asset.outputPixelHeight = Number(result.outputPixelHeight) || null;
+    asset.lastAiOperation = "localUpscale";
+  }
+  return true;
+}
+
+function restoreSliceImageProcessingState(asset) {
+  const restoreState = asset?.imageProcessingRestoreState;
+  if (!asset || !restoreState?.dataUrl) return false;
+  asset.dataUrl = restoreState.dataUrl;
+  asset.svgData = restoreState.svgData || null;
+  asset.aiRedrawn = Boolean(restoreState.aiRedrawn);
+  asset.aiRedrawnPlacement = restoreState.aiRedrawnPlacement
+    ? { ...restoreState.aiRedrawnPlacement }
+    : null;
+  asset.lastAiOperation = restoreState.lastAiOperation || null;
+  clearSliceImageProcessingState(asset);
+  return true;
+}
+
+function clearSliceImageProcessingState(asset) {
+  if (!asset) return;
+  delete asset.imageProcessingRestoreState;
+  delete asset.localInpaintMethod;
+  delete asset.localInpaintMaskDataUrl;
+  delete asset.localInpaintSourceSignature;
+  delete asset.localInpaintDataUrl;
+  delete asset.upscaleMethod;
+  delete asset.upscaleScale;
+  delete asset.sourcePixelWidth;
+  delete asset.sourcePixelHeight;
+  delete asset.outputPixelWidth;
+  delete asset.outputPixelHeight;
+}
+
 function getProcessedSliceResetMessage(asset) {
   const name = asset?.name || "切图资产";
   const hasTransparent = Boolean(asset?.aiTransparent);
   const hasSvg = Boolean(asset?.aiRedrawn);
+  if (asset?.localInpaintMethod || asset?.upscaleMethod) {
+    return `“${name}”已有本地图像处理结果，调整切图将取消修复或高清化，是否继续？`;
+  }
   if (hasTransparent && hasSvg) {
     return `“${name}”已被透明化并转为 SVG，调整切图将取消透明和 SVG，是否继续？`;
   }
@@ -173,15 +260,21 @@ function getProcessedSliceResetMessage(asset) {
 if (typeof module !== "undefined") {
   module.exports = {
     applySliceSvgResult,
+    applySliceImageProcessingResult,
     applySliceTransparencyResult,
+    createSliceImageProcessingRestoreState,
+    clearSliceImageProcessingState,
     createSliceTransparencyRestoreState,
     getSliceActiveImageDataUrl,
     getSliceTransparencyRestoreDataUrl,
     getSliceTransparencySourceDataUrl,
     getProcessedSliceResetMessage,
     hasProcessedSliceResult,
+    shouldPreserveProcessedSliceResult,
+    shouldRefreshSliceCropAfterPositionRestore,
     isLockedAiCompleteAsset,
     restoreSliceSvgState,
+    restoreSliceImageProcessingState,
     restoreSliceTransparencyState
   };
 }

@@ -45,6 +45,7 @@ const {
 const {
   requestWithTransparentBackgroundFallback
 } = require("./src/server/services/transparent-image-request");
+const { cutoutAsset } = require("./src/server/services/ai-cutout");
 const {
   sanitizeFastGeneratedHtml
 } = require("./src/server/services/fast-html-sanitizer");
@@ -73,6 +74,18 @@ const {
 const {
   createModelConfigRoutes
 } = require("./src/server/routes/model-config-routes");
+const {
+  createLocalSegmentationRoutes
+} = require("./src/server/routes/local-segmentation-routes");
+const {
+  createSam2WorkerClient
+} = require("./src/server/services/sam2-worker-client");
+const {
+  createLocalImageProcessingRoutes
+} = require("./src/server/routes/local-image-processing-routes");
+const {
+  createLocalImageWorkerClient
+} = require("./src/server/services/local-image-worker-client");
 const {
   exportFigManifest
 } = require("./src/fig-export/export-fig");
@@ -105,12 +118,13 @@ const handleWorkspaceRoutes = createWorkspaceRoutes({
 const localConfig = loadLocalConfig(CONFIG_FILE);
 let modelConfigState = normalizeModelConfigState(localConfig);
 let modelConfigMutationQueue = Promise.resolve();
-let vectorizerModulePromise = null;
 let sharpModulePromise = null;
 const aiProgressJobs = new Map();
 const aiProgressControllers = new Map();
 const aiRequestContext = new AsyncLocalStorage();
 let activeAiRequestCount = 0;
+const sam2WorkerClient = createSam2WorkerClient({ projectRoot: __dirname });
+const localImageWorkerClient = createLocalImageWorkerClient({ projectRoot: __dirname });
 
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
@@ -151,8 +165,6 @@ const handleAssetRoutes = createAssetRoutes({
   runWithAiProgress,
   generateTransparentAsset,
   redrawAsset,
-  redrawAssetAsSvg,
-  vectorizeAsset,
   sendJson
 });
 const handleDesignRoutes = createDesignRoutes({
@@ -168,9 +180,20 @@ const handleDesignRoutes = createDesignRoutes({
   sendBinary,
   sendJson
 });
+const handleLocalSegmentationRoutes = createLocalSegmentationRoutes({
+  client: sam2WorkerClient,
+  readJson,
+  sendJson
+});
+const handleLocalImageProcessingRoutes = createLocalImageProcessingRoutes({
+  client: localImageWorkerClient,
+  readJson,
+  runWithProgress: runWithAiProgress,
+  updateProgress: updateAiProgress,
+  sendJson
+});
 const PROVIDER_TEST_IMAGE_DATA_URL = "data:image/png;base64,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";
 const EDITABLE_HTML_MAX_TOKENS = Number(process.env.EDITABLE_HTML_MAX_TOKENS || process.env.OPENROUTER_H5_MAX_TOKENS || 12000);
-const SVG_MAX_TOKENS = Number(process.env.SVG_MAX_TOKENS || process.env.OPENROUTER_SVG_MAX_TOKENS || 4096);
 const DECOMPOSITION_MAX_TOKENS = Number(process.env.DECOMPOSITION_MAX_TOKENS || process.env.OPENROUTER_DECOMPOSITION_MAX_TOKENS || 8192);
 
 const server = http.createServer(async (request, response) => {
@@ -198,6 +221,14 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (await handleProgressRoutes(request, response)) {
+      return;
+    }
+
+    if (await handleLocalSegmentationRoutes(request, response)) {
+      return;
+    }
+
+    if (await handleLocalImageProcessingRoutes(request, response)) {
       return;
     }
 
@@ -245,6 +276,8 @@ function shutdownServer() {
   if (shutdownPromise) return shutdownPromise;
   shutdownPromise = Promise.allSettled([
     playwrightFigmaCaptureService.close(),
+    sam2WorkerClient.close(),
+    localImageWorkerClient.close(),
     new Promise((resolve) => server.close(resolve))
   ]).then(() => {});
   return shutdownPromise;
@@ -358,7 +391,7 @@ async function runWithAiProgress(payload, message, operation) {
   if (progressId) aiProgressControllers.set(progressId, controller);
   activeAiRequestCount += 1;
   try {
-    const result = await aiRequestContext.run({ signal: controller.signal }, operation);
+    const result = await aiRequestContext.run({ signal: controller.signal }, () => operation(controller.signal));
     completeAiProgress(progressId, "AI 处理完成");
     return result;
   } catch (error) {
@@ -499,6 +532,9 @@ async function generateTransparentAsset(payload, requestContext) {
 }
 
 async function redrawAsset(payload, requestContext) {
+  if (payload.operation === "remove-background") {
+    return cutoutAsset(payload, requestContext, { normalizeImageResponse, updateProgress: updateAiProgress });
+  }
   const config = requestContext.config;
   const dataUrl = assertString(payload.dataUrl, "dataUrl");
   const maskDataUrl = payload.maskDataUrl;
@@ -661,190 +697,6 @@ function scaleAiInpaintRegionPrompt(prompt, regions, sourceWidth, sourceHeight, 
   );
 }
 
-async function redrawAssetAsSvg(payload, requestContext) {
-  const config = requestContext.config;
-  const dataUrl = assertString(payload.dataUrl, "dataUrl");
-  const width = clampNumber(payload.width || 512, 16, 4096);
-  const height = clampNumber(payload.height || 512, 16, 4096);
-  const basePrompt = buildAssetSvgPrompt({
-    prompt: payload.prompt || "",
-    name: payload.name || "ui_asset",
-    width,
-    height
-  });
-  const attempts = [
-    { prompt: basePrompt, label: "primary" },
-    { prompt: buildAssetSvgRetryPrompt(basePrompt), label: "retry-clean-vector" }
-  ];
-  let lastError = null;
-  let svg = "";
-  let usedAttempt = attempts[0].label;
-
-  for (const attempt of attempts) {
-    try {
-      const data = await requestSvgChatCompletion({
-        prompt: attempt.prompt,
-        dataUrl,
-        name: payload.name || "slice-reference.png",
-        requestContext
-      });
-      const text = extractChatCompletionText(data);
-      svg = sanitizeGeneratedSvg(text);
-      usedAttempt = attempt.label;
-      break;
-    } catch (error) {
-      lastError = error;
-      if (!error.isSvgValidationError || attempt === attempts[attempts.length - 1]) {
-        throw error;
-      }
-    }
-  }
-
-  if (!svg) {
-    throw lastError || svgValidationError("模型没有返回有效 SVG");
-  }
-
-  return {
-    ok: true,
-    engine: "ai-direct-svg",
-    svg,
-    attempt: usedAttempt,
-    provider: {
-      baseUrl: config.baseUrl,
-      model: config.model,
-      size: `${width}x${height}`
-    }
-  };
-}
-
-async function requestSvgChatCompletion({ prompt, dataUrl, name, requestContext }) {
-  const config = requestContext.config;
-  const body = {
-    model: config.model,
-    messages: [
-      {
-        role: "user",
-        content: buildVisionMessageContent(prompt, [
-          {
-            dataUrl,
-            name
-          }
-        ])
-      }
-    ],
-    stream: false,
-    temperature: 0.08,
-    max_tokens: SVG_MAX_TOKENS
-  };
-  return requestContext.callJson("/v1/chat/completions", body);
-}
-
-async function vectorizeAsset(payload) {
-  const dataUrl = assertString(payload.dataUrl, "dataUrl");
-  const imageBuffer = dataUrlToBuffer(dataUrl);
-  const { buffer: vectorImageBuffer, info: preprocessInfo } = await preprocessImageForVectorization(imageBuffer);
-  const {
-    vectorize,
-    ColorMode,
-    Hierarchical,
-    PathSimplifyMode
-  } = await loadVectorizerModule();
-
-  const svg = await vectorize(vectorImageBuffer, {
-    colorMode: ColorMode.Color,
-    colorPrecision: 7,
-    filterSpeckle: 8,
-    spliceThreshold: 55,
-    cornerThreshold: 68,
-    hierarchical: Hierarchical.Stacked,
-    mode: PathSimplifyMode.Spline,
-    layerDifference: 8,
-    lengthThreshold: 6,
-    maxIterations: 3,
-    pathPrecision: 4
-  });
-
-  const pathCount = (svg.match(/<path/g) || []).length;
-  if (!pathCount) {
-    throw badRequest("没有检测到可转换的 SVG 路径");
-  }
-  if (pathCount > 900) {
-    throw badRequest("路径过多，这个素材更适合保留 PNG");
-  }
-
-  return {
-    ok: true,
-    engine: "vtracer",
-    preprocess: preprocessInfo,
-    pathCount,
-    svg
-  };
-}
-
-async function preprocessImageForVectorization(imageBuffer) {
-  try {
-    const sharp = await loadSharpModule();
-    const image = sharp(imageBuffer, {
-      animated: false,
-      failOn: "none",
-      limitInputPixels: false
-    }).rotate().ensureAlpha();
-    const metadata = await image.metadata();
-    const width = metadata.width || 0;
-    const height = metadata.height || 0;
-    if (!width || !height) {
-      return { buffer: imageBuffer, info: { applied: false, reason: "missing-size" } };
-    }
-
-    const longest = Math.max(width, height);
-    const targetLongest = longest < 384 ? Math.min(768, longest * 3) : Math.min(1400, longest);
-    const scale = targetLongest > longest ? targetLongest / longest : 1;
-    const targetWidth = Math.max(1, Math.round(width * scale));
-    const targetHeight = Math.max(1, Math.round(height * scale));
-
-    let pipeline = image;
-    if (scale > 1.01) {
-      pipeline = pipeline.resize({
-        width: targetWidth,
-        height: targetHeight,
-        fit: "fill",
-        kernel: sharp.kernel.lanczos3
-      });
-    }
-
-    const buffer = await pipeline
-      .median(1)
-      .blur(0.18)
-      .png({
-        compressionLevel: 9,
-        adaptiveFiltering: true
-      })
-      .toBuffer();
-
-    return {
-      buffer,
-      info: {
-        applied: true,
-        width,
-        height,
-        targetWidth,
-        targetHeight,
-        scale: Number(scale.toFixed(2))
-      }
-    };
-  } catch (error) {
-    console.warn(`Vectorize preprocessing skipped: ${error.message}`);
-    return { buffer: imageBuffer, info: { applied: false, reason: error.message } };
-  }
-}
-
-function loadVectorizerModule() {
-  if (!vectorizerModulePromise) {
-    vectorizerModulePromise = import("@neplex/vectorizer");
-  }
-  return vectorizerModulePromise;
-}
-
 function loadSharpModule() {
   if (!sharpModulePromise) {
     sharpModulePromise = import("sharp").then((module) => module.default || module);
@@ -896,42 +748,6 @@ function extractChatCompletionText(data) {
     }
   }
   throw new Error("模型没有返回文本内容");
-}
-
-function sanitizeGeneratedSvg(text) {
-  const withoutFence = String(text || "")
-    .replace(/^```(?:svg|xml)?\s*/i, "")
-    .replace(/\s*```$/i, "")
-    .trim();
-  const match = withoutFence.match(/<svg\b[\s\S]*?<\/svg>/i);
-  if (!match) {
-    throw svgValidationError("模型没有返回有效 SVG");
-  }
-  const svg = match[0].trim();
-  const blockedPatterns = [
-    /<script\b/i,
-    /<foreignObject\b/i,
-    /<image\b/i,
-    /\bon[a-z]+\s*=/i,
-    /\b(?:href|xlink:href)\s*=/i,
-    /data:image\//i,
-    /javascript:/i
-  ];
-  if (blockedPatterns.some((pattern) => pattern.test(svg))) {
-    throw svgValidationError("模型返回的 SVG 包含不允许的嵌入内容");
-  }
-  const openTag = svg.match(/<svg\b[^>]*>/i)?.[0] || "";
-  if (!/\bviewBox\s*=/i.test(openTag)) {
-    throw svgValidationError("模型返回的 SVG 缺少 viewBox");
-  }
-  const shapeCount = (svg.match(/<(path|rect|circle|ellipse|line|polyline|polygon)\b/gi) || []).length;
-  if (!shapeCount) {
-    throw svgValidationError("模型返回的 SVG 没有可编辑图形元素");
-  }
-  if (shapeCount > 220) {
-    throw svgValidationError("AI SVG 图层过多，请重新切更小的区域或简化素材");
-  }
-  return svg;
 }
 
 function createAbortError(message) {
@@ -1469,97 +1285,6 @@ function buildAssetRedrawPrompt(prompt) {
   ].join("\n\n");
 }
 
-function buildAssetSvgPrompt({ prompt, name, width, height }) {
-  return [
-    "You are a senior SVG vectorization engineer and UI icon restoration expert.",
-    "Generate a high-fidelity, editable SVG icon based on the attached UI icon asset.",
-    "The attached image is the only source of truth. The goal is to look like the original was carefully traced and vectorized, not redesigned.",
-    prompt || `Redraw "${name}" as an SVG asset.`,
-    "",
-    "Core principles:",
-    "- 1:1 similarity is more important than making a prettier new icon.",
-    "- Faithful restoration is more important than simplification.",
-    "- Do not redesign, restyle, normalize into an icon set, or change the category of the icon.",
-    "- Do not simplify key structures or add elements that are not present in the source.",
-    "- Do not convert a small UI icon into a large illustration.",
-    "",
-    "Before drawing, silently analyze the source:",
-    "1. Identify the icon type: object, animal, person, symbol, abstract shape, functional icon, etc.",
-    "2. Count the main contour blocks and major visual pieces.",
-    "3. Identify the subject position, scale, visual center, and padding inside the crop.",
-    "4. Identify the main contour direction, angles, posture, weight, asymmetry, concave/convex corners, notches, and special curves.",
-    "5. Identify internal structures: highlights, shadows, facets, holes, lines, patterns, decorations, and local details.",
-    "6. Identify layer order: what is in front, what is behind, and which parts overlap.",
-    "7. Identify color relationships: main colors, gradient direction, opacity, highlights, dark areas, and shadows.",
-    "Do not output this analysis. Use it only to guide the SVG.",
-    "",
-    "Canvas requirements:",
-    "- Transparent background.",
-    `- Use viewBox=\"0 0 ${width} ${height}\".`,
-    "- Preserve the original crop's position, scale, and padding ratio.",
-    "- Do not arbitrarily enlarge the subject to fill the canvas.",
-    "- Do not crop the subject.",
-    "- Do not add a background color, base plate, rounded rectangle, glow field, or decorative backdrop unless it exists in the source asset.",
-    "",
-    "Contour requirements:",
-    "- The outer silhouette is mandatory and must closely match the source. Trace-like accuracy is preferred over creative interpretation.",
-    "- Preserve the original proportions, posture, direction, visual weight, rounded corners, sharp corners, concave areas, convex areas, notches, tilt, asymmetry, and special curves.",
-    "- For abstract icons and symbols, prioritize geometric contour accuracy over illustration style.",
-    "- Do not round, blobify, inflate, smooth, or regularize the shape unless the source does.",
-    "- Do not turn a complex contour into a generic geometric shape.",
-    "- Do not add complexity to a simple source icon.",
-    "",
-    "Detail requirements:",
-    "- Keep only details that are actually present in the source.",
-    "- Preserve key highlights, shadows, gradients, facets, cutouts, lines, patterns, local decorations, and internal white/negative shapes.",
-    "- Detail position, size, angle, and layer order should stay close to the original.",
-    "- Clean up only screenshot noise, compression artifacts, accidental background contamination, blurry pixel edges, and neighboring UI fragments.",
-    "- Do not add new textures, lighting effects, decorations, expressions, accessories, or backgrounds.",
-    "",
-    "Color requirements:",
-    "- Match the source colors as closely as possible.",
-    "- Preserve gradient direction, brightness relationships, opacity, highlights, and dark areas.",
-    "- If the source uses gradients, use linearGradient or radialGradient.",
-    "- If the source is flat color, keep it flat. Do not force gradients.",
-    "- For soft shadows, prefer low-opacity paths, ellipses, or gradients. Use only simple filters when absolutely necessary.",
-    "- Do not use heavy drop shadows or colors outside the source palette.",
-    "",
-    "SVG requirements:",
-    `- Return exactly one complete <svg>...</svg> element sized ${width} by ${height}.`,
-    "- Output SVG code only. No explanation, no Markdown, no surrounding text.",
-    "- Do not embed base64, raster images, <image>, foreignObject, external href, CSS imports, script, animation, or HTML.",
-    "- Use editable SVG elements: path, circle, rect, ellipse, polygon, polyline, line, g, defs, linearGradient, radialGradient, mask, clipPath, and simple filter when needed.",
-    "- Prefer path and Bezier curves for the main contour.",
-    "- Each major visual block should be grouped clearly for later editing.",
-    "- Keep path count reasonable: not over-simplified, but no meaningless pixel fragments.",
-    "- Use clear ids such as main-shape, highlight, shadow, detail, outline, inner-cutout, gradient-main.",
-    "- Do not use strokes to fake filled shapes unless the source itself is a line icon.",
-    "- If the source has a stroke, preserve stroke width, cap style, join style, and rounded corner behavior.",
-    "",
-    "Forbidden:",
-    "- No redesign. No category changes. No direction changes. No proportion changes. No visual weight changes.",
-    "- No added elements. No background. No bitmap output. No PNG/JPG/base64.",
-    "- Do not turn it into a generic icon. Do not turn a simple UI icon into a complex illustration. Do not over-simplify a complex icon."
-  ].join("\n");
-}
-
-function buildAssetSvgRetryPrompt(basePrompt) {
-  return [
-    basePrompt,
-    "",
-    "The previous SVG candidate failed quality validation.",
-    "Regenerate it with stricter contour lock:",
-    "- First create the exact outer contour, then add internal highlights, shadows, gradients, and details.",
-    "- Preserve source silhouette point-by-point at the visual level: angles, corners, concave areas, convex areas, notches, tilt, and padding.",
-    "- For small abstract icons, do not reinterpret the shape as a soft blob or a new symbol.",
-    "- Do not redesign it into a generic simplified icon or remove small details that make the source recognizable.",
-    "- Do not use raster images or embedded data.",
-    "- Include a correct viewBox on the <svg> element.",
-    "- Use enough clean vector layers, gradients, and opacity to preserve the source look, but merge tiny fragments into purposeful shapes.",
-    "- The final SVG should look like a carefully vectorized version of the reference, not a newly generated icon."
-  ].join("\n");
-}
-
 function toOpenAIImageSize(width, height) {
   const numericWidth = Number(width);
   const numericHeight = Number(height);
@@ -1681,11 +1406,4 @@ function escapeHtml(value) {
     };
     return entities[character] || character;
   });
-}
-
-function svgValidationError(message) {
-  const error = new Error(message);
-  error.statusCode = 422;
-  error.isSvgValidationError = true;
-  return error;
 }

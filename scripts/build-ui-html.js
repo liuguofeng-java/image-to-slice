@@ -12,7 +12,7 @@ const DEFAULT_CAPTURE_RUNTIME_PATHS = [
 ].map(portableSourcePath);
 
 const DEFAULT_VENDOR_SCRIPT_PATHS = [
-  path.join("src", "vendor", "imagetracer.js")
+  path.join("dist", "vue-ui.js")
 ].map(portableSourcePath);
 
 const DEFAULT_APP_SCRIPT_PATHS = [
@@ -26,7 +26,6 @@ const DEFAULT_APP_SCRIPT_PATHS = [
   path.join("src", "ui", "services", "ai-inpaint-results.js"),
   path.join("src", "ui", "services", "slice-geometry.js"),
   path.join("src", "ui", "services", "export-manifest.js"),
-  path.join("src", "ui", "services", "svg-utils.js"),
   path.join("src", "ui", "services", "css-utils.js"),
   path.join("src", "ui", "services", "image-color-utils.js"),
   path.join("src", "ui", "services", "slice-repair.js"),
@@ -107,6 +106,9 @@ function buildUiHtmlFile({
 } = {}) {
   const templateHtml = fs.readFileSync(templatePath, "utf8");
   const stylesCss = fs.readFileSync(stylesPath, "utf8");
+  if (vendorScriptPaths.includes("dist/vue-ui.js") && !fs.existsSync("dist/vue-ui.js")) {
+    throw new Error("Missing Vue component bundle. Run npm run build:ui instead of invoking the HTML assembly script directly.");
+  }
   const missingAppScriptPaths = appScriptPaths.filter((appScriptPath) => !fs.existsSync(appScriptPath));
   if (missingAppScriptPaths.length) {
     throw new Error(`Missing required app script: ${missingAppScriptPaths.join(", ")}`);

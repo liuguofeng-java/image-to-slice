@@ -18,11 +18,7 @@
       </div>
     </div>
     <main class="shell">
-      <header class="topbar">
-        <div class="brand">
-          <span class="brand-mark" aria-hidden="true"></span>
-          <span class="brand-title">Image To Slice</span>
-        </div>
+      <header class="canvas-toolbar" aria-label="画布操作">
         <div class="topbar-actions">
           <div class="import-action-group ai">
             <button id="decomposeBackground" class="text-action place-action" type="button" disabled>AI拆图</button>
@@ -51,9 +47,24 @@
             </div>
           </div>
           <button id="exportFigmaFrameHtml" class="text-action place-action" type="button" aria-disabled="true" title="请在 Figma 中选择一个完整画板">导出 HTML</button>
-          <button id="windowToggle" class="window-toggle" type="button" aria-label="收起窗口" title="收起窗口">−</button>
+          <button id="settingsTrigger" class="settings-trigger" type="button" aria-label="打开设置">设置</button>
+          <button id="newWorkTrigger" class="new-work-trigger" type="button">开始新工作</button>
+          <button id="draftsTrigger" class="drafts-trigger" type="button" hidden>切图记录</button>
         </div>
       </header>
+      <div class="resource-toolbar" aria-label="资源操作">
+        <div class="cut-head-actions">
+          <button id="exportSlices" class="cut-batch" type="button" disabled>导出切图包</button>
+          <button id="transparentAll" class="cut-batch" type="button" disabled>全部透明</button>
+          <button id="toggleAllSlices" class="cut-batch" type="button" disabled>全部隐藏</button>
+          <button id="repairPreview" class="cut-batch" type="button" disabled>预览补齐</button>
+        </div>
+        <div id="sliceToolMode" class="slice-tool-mode" role="group" aria-label="切图画布工具">
+          <button class="active" type="button" data-slice-tool="select" aria-pressed="true">选择</button>
+          <button type="button" data-slice-tool="draw" aria-pressed="false">连续框选</button>
+        </div>
+        <div id="selectedSliceActions" class="selected-slice-actions" role="group" aria-label="所选资源操作" hidden></div>
+      </div>
 
       <section class="workspace">
         <aside class="sidebar">
@@ -109,29 +120,9 @@
           </div>
 
           <section id="cutSection" class="cut-section">
-            <div class="cut-head">
-              <div class="cut-title-row">
-                <h2 class="cut-title">切图资产</h2>
-                <span id="resultCount"></span>
-              </div>
-              <div class="cut-head-actions">
-                <button id="exportSlices" class="cut-batch" type="button" disabled>导出切图包</button>
-                <button id="transparentAll" class="cut-batch" type="button" disabled>全部透明</button>
-                <button id="toggleAllSlices" class="cut-batch" type="button" disabled>全部隐藏</button>
-                <button id="repairPreview" class="cut-batch" type="button" disabled>预览补齐</button>
-              </div>
-            </div>
-            <div id="sliceToolMode" class="slice-tool-mode" role="group" aria-label="切图画布工具">
-              <button class="active" type="button" data-slice-tool="select" aria-pressed="true">选择</button>
-              <button type="button" data-slice-tool="draw" aria-pressed="false">连续框选</button>
-              <span id="sliceToolHint">选择、移动或调整已有图层</span>
-            </div>
             <div id="cutGrid" class="cut-grid"></div>
           </section>
 
-          <button id="settingsTrigger" class="settings-trigger" type="button" aria-label="打开设置">设置</button>
-          <button id="newWorkTrigger" class="new-work-trigger" type="button">开始新工作</button>
-          <button id="draftsTrigger" class="drafts-trigger" type="button" hidden>切图记录</button>
           <section id="draftsPanel" class="drafts-panel" aria-label="切图记录">
             <div class="drafts-head">
               <strong>切图记录</strong>
@@ -215,7 +206,6 @@
       <div id="sliceTypePopover" class="slice-type-popover" role="dialog" aria-modal="false" aria-label="选择图层类型" hidden>
         <strong>这个区域是什么？</strong>
         <div class="slice-type-actions">
-          <button type="button" data-slice-content-type="background">背景</button>
           <button type="button" data-slice-content-type="image">图片</button>
           <button type="button" data-slice-content-type="text">文字</button>
         </div>
@@ -261,6 +251,7 @@
           </section>
         </section>
       </div>
+      <div id="sliceCutoutEditorRoot"></div>
       <div id="importHelpPopover" class="import-help-popover" role="dialog" hidden></div>
       <section id="workspaceRestoreDialog" class="place-dialog" aria-modal="true" aria-label="恢复上次工作">
         <div class="place-dialog-card">
@@ -448,7 +439,6 @@
           </div>
         </div>
       </section>
-      <div id="windowResizer" class="window-resizer" title="拖拽调整窗口大小" aria-hidden="true"></div>
     </main>
 
     <!-- WEB_TO_FIGMA_CAPTURE_RUNTIME_START -->

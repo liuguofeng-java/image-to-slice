@@ -5,8 +5,11 @@
 .env
 .env.local
 node_modules/
+test-results/
 .DS_Store
 *.log
+__pycache__/
+*.pyc
 dist/*
 !dist/code.js
 !dist/figma-sim.js

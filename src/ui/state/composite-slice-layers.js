@@ -38,12 +38,20 @@ function normalizeSliceTextShadow(value) {
 function normalizeCompositeSliceLayers(layers = []) {
   const normalized = (Array.isArray(layers) ? layers : []).map((layer) => {
     const contentType = normalizeSliceContentType(layer?.contentType, "image");
-    return {
-      ...layer,
-      contentType,
-      parentId: typeof layer?.parentId === "string" && layer.parentId.trim() ? layer.parentId.trim() : null,
-      ...(contentType === "text" ? { text: normalizeSliceTextDefinition(layer?.text, layer?.placement) } : {})
-    };
+    const normalizedLayer = layer && typeof layer === "object" ? layer : {};
+    normalizedLayer.contentType = contentType;
+    const placement = normalizedLayer.placement || {};
+    const initialPlacement = normalizedLayer.initialPlacement || {};
+    normalizedLayer.initialPlacement = Number.isFinite(Number(initialPlacement.x)) && Number.isFinite(Number(initialPlacement.y))
+      ? { x: Number(initialPlacement.x), y: Number(initialPlacement.y) }
+      : { x: Number(placement.x) || 0, y: Number(placement.y) || 0 };
+    normalizedLayer.parentId = typeof layer?.parentId === "string" && layer.parentId.trim()
+      ? layer.parentId.trim()
+      : null;
+    if (contentType === "text") {
+      normalizedLayer.text = normalizeSliceTextDefinition(layer?.text, layer?.placement);
+    }
+    return normalizedLayer;
   });
   const byId = new Map(normalized.map((layer) => [String(layer?.id || ""), layer]));
   for (const layer of normalized) {

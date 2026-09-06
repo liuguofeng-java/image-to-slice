@@ -10,6 +10,10 @@ This project ships a Figma plugin. Keep changes practical and avoid splitting fi
 - `src/ui/state/`: Reusable UI state rules and state transitions.
 - `src/ui/services/`: Reusable business logic that does not belong to a single DOM view.
 - `src/ui/renderers/`: Reusable DOM rendering helpers for panels, dialogs, lists, menus, and controls.
+- `src/ui/components/`: Migrated Vue single-file components. Do not add imperative DOM renderers for these views.
+- `src/ui/stores/`: Pinia stores; controllers, timers and non-serializable resources stay outside persisted state.
+- `src/ui/types/`: Typed component and state contracts.
+- `src/ui/migration/`: Temporary explicit bridges from unmigrated workflows. Do not import the legacy app into Vue components.
 - `src/ui/ui.template.html`: Source UI shell. Keep script placeholders here.
 - `src/ui/styles.css`: UI styles.
 - `src/vendor/`: Third-party or Figma-provided browser scripts. Keep them local and build-time inlined.
@@ -43,3 +47,6 @@ npm run build:ui
 node --check scripts/build-ui-html.js
 git diff --check
 ```
+
+For migrated Vue components also run `npm run typecheck`, `npm run test:vue`, and `npm run test:e2e`.
+See `docs/vue-migration.md` before continuing the migration; do not treat the intermediate component integration as a completed Vue application.

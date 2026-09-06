@@ -81,17 +81,16 @@
       const htmlPreviewInspectorTree = document.getElementById("htmlPreviewInspectorTree");
       const htmlPreviewInspectorDetails = document.getElementById("htmlPreviewInspectorDetails");
       const resultGrid = document.getElementById("resultGrid");
-      const resultCount = document.getElementById("resultCount");
       const previewZoomControls = document.getElementById("previewZoomControls");
       const cutSection = document.getElementById("cutSection");
       const cutGrid = document.getElementById("cutGrid");
       const sliceToolMode = document.getElementById("sliceToolMode");
-      const sliceToolHint = document.getElementById("sliceToolHint");
       const sliceTypePopover = document.getElementById("sliceTypePopover");
       const exportSlicesButton = document.getElementById("exportSlices");
       const transparentAllButton = document.getElementById("transparentAll");
       const toggleAllSlicesButton = document.getElementById("toggleAllSlices");
       const repairPreviewButton = document.getElementById("repairPreview");
+      const selectedSliceActions = document.getElementById("selectedSliceActions");
       const sliceSettingsDrawer = document.getElementById("sliceSettingsDrawer");
       const sliceSettingsClose = document.getElementById("sliceSettingsClose");
       const sliceSettingsTitle = document.getElementById("sliceSettingsTitle");
@@ -149,8 +148,6 @@
       const startupGate = document.getElementById("startupGate");
       const startupMessage = document.getElementById("startupMessage");
       const startupRetry = document.getElementById("startupRetry");
-      const windowToggle = document.getElementById("windowToggle");
-      const windowResizer = document.getElementById("windowResizer");
       let previewCanvasViewport = null;
       let htmlPreviewCanvasViewport = null;
       let htmlPreviewInspectorWidth = 360;
@@ -273,8 +270,27 @@
       let pendingExternalSliceDrag = null;
       let sliceEdit = null;
       const sliceCropVersions = new Map();
-      const sliceAiControllers = new Map();
-      let cutReorderDrag = null;
+      const sliceAiControllers = ImageToSliceVue.createAiTaskRegistry();
+      const localImageTaskProgress = new Map();
+      let sliceListView = null;
+      let sliceCutoutEditorView = null;
+      let activeSmartCutoutContext = null;
+      const smartCutoutQueue = [];
+      window.addEventListener("pagehide", () => {
+        sliceListView?.dispose();
+        sliceListView = null;
+        sliceCutoutEditorView?.dispose();
+        sliceCutoutEditorView = null;
+        activeSmartCutoutContext = null;
+        smartCutoutQueue.length = 0;
+        sliceAiControllers.abortAll();
+        localImageTaskProgress.forEach((task) => {
+          fetchBackend(`/api/progress/${encodeURIComponent(task.progressId)}/cancel`, { method: "POST" }).catch(() => {});
+          task.stopProgress?.();
+        });
+        localImageTaskProgress.clear();
+      });
+      window.addEventListener("pageshow", (event) => { if (event.persisted) renderCutModules(currentManifest); });
       let aiCompletePreview = null;
       let sliceImageEditorState = null;
       const sliceUndoStack = [];
@@ -339,16 +355,8 @@
         }
       });
       let workspaceOperationRunning = false;
-      const UI_WINDOW_STORAGE_KEY = "ai-ui-window-state-v2";
-      const DEFAULT_UI_WINDOW = { width: 1280, height: 860 };
-      const COLLAPSED_UI_WINDOW = { width: 320, height: 72 };
-      let isUiCollapsed = false;
-      let lastExpandedWindow = { ...DEFAULT_UI_WINDOW };
-      let saveWindowStateTimer = null;
-      let resizeDrag = null;
       const figExportUiMode = getFigExportUiMode(isEmbeddedPluginHost());
 
-      initUiWindowState();
       placeSourceButton.textContent = figExportUiMode.sliceLabel;
       htmlPreviewImport.textContent = figExportUiMode.editableLabel;
       renderModelSettings();
@@ -644,12 +652,18 @@
             const changed = hasSlicePlacementChanged(sliceEdit.original, nextPlacement);
             asset.placement = nextPlacement;
             const editId = sliceEdit.id;
+            const editMode = sliceEdit.mode;
+            const preserveProcessedResult = sliceEdit.preserveProcessedResult === true;
             sliceEdit = null;
             if (!changed) {
               renderSliceOverlay(card, layer, image);
               return;
             }
-            await updateSliceAssetCrop(editId);
+            if (editMode === "move" && preserveProcessedResult) {
+              scheduleWorkspaceDraftSave();
+            } else {
+              await updateSliceAssetCrop(editId);
+            }
             refreshSliceVisibility();
             renderCutModules(currentManifest);
             renderSliceOverlay(card, layer, image);
@@ -702,31 +716,6 @@
         pendingExternalSliceDrag = null;
         sliceDraft = null;
         document.body.style.userSelect = "";
-        cutReorderDrag = null;
-        cutGrid.querySelector(".cut-drop-indicator")?.remove();
-      });
-      document.addEventListener("pointermove", (event) => {
-        if (!cutReorderDrag || cutReorderDrag.pointerId !== event.pointerId) return;
-        const target = document.elementFromPoint(event.clientX, event.clientY)?.closest("#cutGrid [data-slice-id]");
-        if (!target) return;
-        cutReorderDrag.moved = true;
-        cutReorderDrag.targetId = target.dataset.sliceId;
-        cutReorderDrag.before = event.clientY < target.getBoundingClientRect().top + target.getBoundingClientRect().height / 2;
-        cutGrid.querySelectorAll(".drag-over").forEach((item) => item.classList.remove("drag-over"));
-        const indicator = cutGrid.querySelector(".cut-drop-indicator");
-        if (indicator) {
-          indicator.hidden = false;
-          const top = cutReorderDrag.before ? target.offsetTop - 5 : target.offsetTop + target.offsetHeight + 5;
-          indicator.style.top = `${Math.max(0, top)}px`;
-        }
-        event.preventDefault();
-      });
-      document.addEventListener("pointerup", (event) => {
-        if (!cutReorderDrag || cutReorderDrag.pointerId !== event.pointerId) return;
-        const drag = cutReorderDrag;
-        cutReorderDrag = null;
-        cutGrid.querySelector(".cut-drop-indicator")?.remove();
-        if (drag.moved) reorderSliceAsset(drag.sourceId, drag.targetId, drag.before);
       });
       document.addEventListener("pointerdown", async (event) => {
         if (
@@ -739,14 +728,6 @@
             await addSliceAsset(draft, { clientX: event.clientX, clientY: event.clientY });
           }
           document.body.style.userSelect = "";
-        }
-        if (
-          sliceSettingsDrawer.classList.contains("open") &&
-          !event.target.closest("#sliceSettingsDrawer") &&
-          !event.target.closest("#cutGrid [data-slice-id]") &&
-          !event.target.closest(".slice-layer [data-slice-id]")
-        ) {
-          closeSliceSettingsDrawer();
         }
       });
       document.addEventListener("keydown", (event) => {
@@ -799,52 +780,6 @@
           removeSelectedSliceAssets(false);
         }
       });
-      sliceSettingsDrawer.querySelector(".slice-settings-head").addEventListener("pointerdown", (event) => {
-        if (event.button !== 0 || event.target.closest("button, input, select, textarea")) {
-          return;
-        }
-        event.preventDefault();
-        const rect = sliceSettingsDrawer.getBoundingClientRect();
-        sliceSettingsPosition = { left: rect.left, top: rect.top };
-        sliceSettingsDrag = {
-          pointerId: event.pointerId,
-          startX: event.clientX,
-          startY: event.clientY,
-          startLeft: rect.left,
-          startTop: rect.top
-        };
-        sliceSettingsDrawer.classList.add("dragging");
-        sliceSettingsDrawer.setPointerCapture(event.pointerId);
-      });
-
-      sliceSettingsDrawer.addEventListener("pointermove", (event) => {
-        if (!sliceSettingsDrag || event.pointerId !== sliceSettingsDrag.pointerId) {
-          return;
-        }
-        const rect = sliceSettingsDrawer.getBoundingClientRect();
-        const next = clampSliceSettingsPosition(
-          sliceSettingsDrag.startLeft + event.clientX - sliceSettingsDrag.startX,
-          sliceSettingsDrag.startTop + event.clientY - sliceSettingsDrag.startY,
-          rect.width,
-          rect.height
-        );
-        setSliceSettingsPosition(next);
-      });
-
-      sliceSettingsDrawer.addEventListener("pointerup", (event) => {
-        if (!sliceSettingsDrag || event.pointerId !== sliceSettingsDrag.pointerId) {
-          return;
-        }
-        sliceSettingsDrawer.releasePointerCapture(event.pointerId);
-        sliceSettingsDrawer.classList.remove("dragging");
-        sliceSettingsDrag = null;
-      });
-
-      sliceSettingsDrawer.addEventListener("pointercancel", () => {
-        sliceSettingsDrawer.classList.remove("dragging");
-        sliceSettingsDrag = null;
-      });
-
       taskRoutingView.addEventListener("click", async (event) => {
         const helpButton = event.target.closest("[data-import-help]");
         if (helpButton) {
@@ -904,57 +839,6 @@
       });
       document.addEventListener("keydown", (event) => {
         if (event.key === "Escape") closeModelRoutePickers();
-      });
-
-      windowToggle.addEventListener("click", () => {
-        setUiCollapsed(!isUiCollapsed, true);
-      });
-
-      windowResizer.addEventListener("pointerdown", (event) => {
-        if (isUiCollapsed) {
-          return;
-        }
-        event.preventDefault();
-        resizeDrag = {
-          pointerId: event.pointerId,
-          startX: event.clientX,
-          startY: event.clientY,
-          startWidth: window.innerWidth,
-          startHeight: window.innerHeight
-        };
-        windowResizer.setPointerCapture(event.pointerId);
-      });
-
-      windowResizer.addEventListener("pointermove", (event) => {
-        if (!resizeDrag || event.pointerId !== resizeDrag.pointerId) {
-          return;
-        }
-        const nextSize = normalizeWindowSize(
-          resizeDrag.startWidth + event.clientX - resizeDrag.startX,
-          resizeDrag.startHeight + event.clientY - resizeDrag.startY
-        );
-        lastExpandedWindow = nextSize;
-        postPluginMessage({
-          type: "resize-ui",
-          width: nextSize.width,
-          height: nextSize.height
-        });
-        saveWindowState({
-          ...nextSize,
-          collapsed: false
-        });
-      });
-
-      windowResizer.addEventListener("pointerup", (event) => {
-        if (!resizeDrag || event.pointerId !== resizeDrag.pointerId) {
-          return;
-        }
-        windowResizer.releasePointerCapture(event.pointerId);
-        resizeDrag = null;
-      });
-
-      windowResizer.addEventListener("pointercancel", () => {
-        resizeDrag = null;
       });
 
       transparentAllButton.addEventListener("click", async () => {
@@ -1547,7 +1431,6 @@
           && activeImportMessage.importType === "source"
         ) {
           finishFigmaImportRequest(activeImportMessage.requestId);
-          setUiCollapsed(true, true);
           setStatus(
             pendingCompositeImportWarning ? `源文件已导入 Figma；${pendingCompositeImportWarning}。` : "源文件已导入 Figma。",
             pendingCompositeImportWarning ? "warning" : "success"
@@ -1562,7 +1445,6 @@
           const groupWarnings = Array.isArray(activeImportMessage.groupWarnings) ? activeImportMessage.groupWarnings : [];
           finishFigmaImportRequest(activeImportMessage.requestId);
           closeHtmlPreview();
-          setUiCollapsed(true, true);
           if (skipped.length || groupWarnings.length || pendingCompositeImportWarning) {
             console.warn("Figma 导入跳过了不支持的图层：", skipped);
             if (groupWarnings.length) {
@@ -1580,103 +1462,12 @@
             setStatus("编辑设计稿已导入 Figma。", "success");
           }
         }
-        if (message && message.type === "ui-window-state") {
-          applyHostWindowState(message.state);
-        }
       };
 
       if (isEmbeddedPluginHost()) {
         parent.postMessage({
           pluginMessage: { type: "request-figma-frame-export-selection-state" }
         }, "*");
-      }
-
-      window.addEventListener("resize", () => {
-        handleViewportResize();
-      });
-
-      function initUiWindowState() {
-        const stored = readStoredWindowState();
-        if (stored) {
-          lastExpandedWindow = normalizeWindowSize(stored.width, stored.height);
-          setUiCollapsed(false, false);
-        } else {
-          saveWindowState({
-            ...lastExpandedWindow,
-            collapsed: false
-          });
-        }
-      }
-
-      function applyHostWindowState(state) {
-        if (!state || typeof state !== "object") {
-          return;
-        }
-        const collapsed = Boolean(state.collapsed);
-        if (!collapsed) {
-          lastExpandedWindow = normalizeWindowSize(state.width, state.height);
-        }
-        setUiCollapsed(collapsed, false);
-      }
-
-      function handleViewportResize() {
-        if (isUiCollapsed) {
-          return;
-        }
-        lastExpandedWindow = normalizeWindowSize(window.innerWidth, window.innerHeight);
-        window.clearTimeout(saveWindowStateTimer);
-        saveWindowStateTimer = window.setTimeout(() => {
-          saveWindowState({
-            ...lastExpandedWindow,
-            collapsed: false
-          });
-        }, 240);
-      }
-
-      function setUiCollapsed(collapsed, notifyHost) {
-        isUiCollapsed = collapsed;
-        document.body.classList.toggle("collapsed", isUiCollapsed);
-        windowToggle.textContent = isUiCollapsed ? "展开" : "−";
-        windowToggle.setAttribute("aria-label", isUiCollapsed ? "展开窗口" : "收起窗口");
-        windowToggle.title = isUiCollapsed ? "展开窗口" : "收起窗口";
-        const nextState = {
-          ...lastExpandedWindow,
-          collapsed: isUiCollapsed
-        };
-        saveWindowState(nextState);
-        if (notifyHost) {
-          postPluginMessage({
-            type: "set-ui-collapsed",
-            collapsed: isUiCollapsed
-          });
-          if (!isEmbeddedPluginHost()) {
-            postPluginMessage({
-              type: "resize-ui",
-              width: isUiCollapsed ? COLLAPSED_UI_WINDOW.width : lastExpandedWindow.width,
-              height: isUiCollapsed ? COLLAPSED_UI_WINDOW.height : lastExpandedWindow.height
-            });
-          }
-        }
-      }
-
-      function saveWindowState(state) {
-        safeStorageSet(UI_WINDOW_STORAGE_KEY, JSON.stringify(state));
-        postPluginMessage({
-          type: "save-ui-window-state",
-          state
-        });
-      }
-
-      function readStoredWindowState() {
-        const raw = safeStorageGet(UI_WINDOW_STORAGE_KEY);
-        if (!raw) {
-          return null;
-        }
-        try {
-          return JSON.parse(raw);
-        } catch {
-          return null;
-        }
       }
 
       function postPluginMessage(pluginMessage) {
@@ -1900,7 +1691,6 @@
             <div class="loading-note">${message}</div>
           </div>
         `;
-        resultCount.textContent = "生成中";
       }
 
       function updateMainAiProgress(progress) {
@@ -1921,7 +1711,6 @@
             <span>${escapeHtml(message)}</span>
           </div>
         `;
-        resultCount.textContent = "生成失败";
       }
 
       function renderActiveResult(manifest) {
@@ -1933,7 +1722,6 @@
         const activeImage = manifest.resultImages[activeResultIndex] || manifest.resultImages[0];
         const imageWidth = Number(activeImage.width || manifest.screen?.width || 0);
         const imageHeight = Number(activeImage.height || manifest.screen?.height || 0);
-        resultCount.textContent = imageWidth && imageHeight ? `${imageWidth}px × ${imageHeight}px` : "";
         const shouldRestoreScroll = scrollState && scrollState.resultId === activeImage.id;
         ensureImageSliceState(activeImage);
         manifest.previewImage = { dataUrl: activeImage.dataUrl };
@@ -2062,6 +1850,48 @@
           : ` · R${values.join("/")}`;
       }
 
+      function renderSelectedSliceActions() {
+        const selectedAssets = getSelectedSliceAssets();
+        const asset = selectedAssets.find((entry) => entry.id === activeSliceId) || selectedAssets[0];
+        if (!asset || selectedAssets.length === 0) {
+          selectedSliceActions.hidden = true;
+          selectedSliceActions.replaceChildren();
+          return;
+        }
+        const isMultiSelection = selectedAssets.length > 1;
+        const isAnyProcessing = selectedAssets.some((entry) => entry.aiProcessing);
+        const allAssets = getActiveResultImage()?.sliceManifest?.assets || [];
+        const contentType = normalizeSliceContentType(asset.contentType, "image");
+        const isRaster = contentType === "background" || contentType === "image";
+        const localTransparent = Boolean(asset.transparent && !asset.aiTransparent);
+        const hasActiveChildren = getDirectChildRemovalRegions(asset, allAssets).length > 0;
+        const canRestorePosition = selectedAssets.some(hasSliceInitialPositionChanged);
+        selectedSliceActions.innerHTML = isMultiSelection ? `
+          <button type="button" data-slice-toolbar-action="restore-position"${isAnyProcessing || !canRestorePosition ? " disabled" : ""}>还原选中位置</button>
+        ` : `
+          <button type="button" data-slice-toolbar-action="preview"${isAnyProcessing || !isRaster ? " disabled" : ""}>图片预览</button>
+          <button type="button" data-slice-toolbar-action="visibility"${isAnyProcessing ? " disabled" : ""}>${asset.hidden ? "显示图层" : "隐藏图层"}</button>
+          <button type="button" data-slice-toolbar-action="transparent"${isAnyProcessing || !isRaster || (hasActiveChildren && !localTransparent) ? " disabled" : ""}>${localTransparent ? "恢复透明前" : "边缘透明"}</button>
+          <button type="button" data-slice-toolbar-action="ai-cutout"${isAnyProcessing || !isRaster ? " disabled" : ""}>AI抠图</button>
+          <button type="button" data-slice-toolbar-action="restore-position"${isAnyProcessing || !canRestorePosition ? " disabled" : ""}>还原位置</button>
+          ${asset.aiProcessing ? '<button class="danger" type="button" data-slice-toolbar-action="cancel">取消当前任务</button>' : ""}
+        `;
+        selectedSliceActions.hidden = false;
+        selectedSliceActions.querySelectorAll("[data-slice-toolbar-action]").forEach((button) => {
+          button.addEventListener("click", async () => {
+            await handleSliceListAction({
+              type: button.dataset.sliceToolbarAction,
+              id: asset.id
+            });
+            renderSelectedSliceActions();
+            if (sliceSettingsDrawer.classList.contains("open") && getActiveSliceAsset(asset.id)) {
+              sliceSettingsId = asset.id;
+              renderSliceSettingsDrawer();
+            }
+          });
+        });
+      }
+
       function renderCutModules(manifest, animateReorder = false) {
         if (!manifest?.resultImages?.length) {
           renderEmptyCutModules();
@@ -2069,260 +1899,105 @@
         }
         cutSection.classList.add("open");
         const activeImage = getActiveResultImage();
-        const previousImageId = cutGrid.dataset.resultImageId;
-        const scrollTop = previousImageId === activeImage.id ? cutGrid.scrollTop : 0;
         cutGrid.dataset.resultImageId = activeImage.id;
         ensureImageSliceState(activeImage);
         const assets = activeImage.sliceManifest.assets;
-        exportSlicesButton.disabled = assets.length === 0;
+        const hasProcessingAssets = assets.some((asset) => asset.aiProcessing);
+        exportSlicesButton.disabled = assets.length === 0 || hasProcessingAssets;
         const rasterAssets = assets.filter((asset) => ["background", "image"].includes(asset.contentType) && asset.dataUrl);
-        transparentAllButton.disabled = rasterAssets.length === 0 || rasterAssets.every((asset) => asset.transparent);
-        toggleAllSlicesButton.disabled = assets.length === 0;
-        repairPreviewButton.disabled = assets.length === 0;
+        transparentAllButton.disabled = hasProcessingAssets || rasterAssets.length === 0 || rasterAssets.every((asset) => asset.transparent);
+        toggleAllSlicesButton.disabled = assets.length === 0 || hasProcessingAssets;
+        repairPreviewButton.disabled = assets.length === 0 || hasProcessingAssets;
         toggleAllSlicesButton.textContent = assets.length > 0 && assets.every((asset) => asset.hidden) ? "全部显示" : "全部隐藏";
-        if (assets.length === 0) {
-          closeSliceSettingsDrawer();
-          cutGrid.innerHTML = `<div class="cut-empty">还没有切图区域</div>`;
+        if (!assets.length) closeSliceSettingsDrawer();
+        if (!sliceListView) sliceListView = ImageToSliceVue.mountSliceList(cutGrid, handleSliceListAction);
+        const numberById = new Map(assets.map((asset, index) => [asset.id, index + 1]));
+        sliceListView.update({
+          imageId: activeImage.id,
+          animateReorder,
+          rows: buildCompositeSliceDisplayTree(assets).map(({ layer: asset, depth, childCount }) => {
+            const aiTransparencyCurrent = isAiTransparentChildCleanupCurrent(asset, assets);
+            const details = [
+              asset.placement.width + "px × " + asset.placement.height + "px" + formatSliceRadiiLabel(asset),
+              asset.hidden && "已隐藏",
+              asset.transparent && "透明 PNG",
+              asset.auditFailed && "审计失败 · 需手动调整",
+              asset.aiTransparent && (aiTransparencyCurrent
+                ? (asset.cutoutMethod === "sam2-local" ? "SAM 2 智能抠图" : "旧 AI 透明")
+                : "子层已变化，需重新智能抠图"),
+              getAiInpaintTypeLabel(asset),
+              asset.localInpaintMethod && "本地 LaMa 修复",
+              asset.upscaleMethod && `${asset.upscaleScale || 2}× 高清`,
+              asset.upscaleMethod && asset.outputPixelWidth && asset.outputPixelHeight
+                && `位图 ${asset.outputPixelWidth}×${asset.outputPixelHeight}`
+            ].filter(Boolean);
+            return {
+              id: asset.id, parentId: asset.parentId || null, name: asset.name,
+              number: numberById.get(asset.id), depth, childCount,
+              contentType: normalizeSliceContentType(asset.contentType, "image"),
+              text: asset.text?.characters || "", dataUrl: asset.dataUrl || "",
+              radius: getSliceRadiiCssValue(asset, currentManifest?.screen),
+              description: details.join(" · "), selected: isSliceSelected(asset.id),
+              hidden: Boolean(asset.hidden), processing: Boolean(asset.aiProcessing),
+              processingLabel: asset.aiProcessingLabel || "", auditFailed: Boolean(asset.auditFailed),
+              hasActiveChildren: getDirectChildRemovalRegions(asset, assets).length > 0,
+              localTransparent: Boolean(asset.transparent && !asset.aiTransparent),
+              aiTransparent: Boolean(asset.aiTransparent), aiTransparencyCurrent,
+              locallyRepaired: Boolean(asset.localInpaintMethod),
+              upscaled: Boolean(asset.upscaleMethod)
+            };
+          })
+        });
+        renderSelectedSliceActions();
+      }
+
+      async function handleSliceListAction(event) {
+        if (event.type === "reorder") {
+          reorderSliceAsset(event.sourceId, event.targetId, event.before);
           return;
         }
-        const displayEntries = buildCompositeSliceDisplayTree(assets);
-        const displayAssets = displayEntries.map((entry) => entry.layer);
-        const assetNumberById = new Map(assets.map((asset, index) => [asset.id, index + 1]));
-        cutGrid.innerHTML = displayEntries.map(({ layer: asset, depth, childCount }) => {
-          const childRemovalRegions = getDirectChildRemovalRegions(asset, assets);
-          const hasActiveChildren = childRemovalRegions.length > 0;
-          const aiTransparencyCurrent = isAiTransparentChildCleanupCurrent(asset, assets);
-          const supportsTransparency = ["background", "image"].includes(asset.contentType);
-          const canRestoreLocalTransparency = asset.transparent && !asset.aiTransparent;
-          return `
-          <div class="cut-item${depth > 0 ? " slice-tree-child" : ""}${childCount > 0 ? " slice-tree-parent" : ""}${isSliceSelected(asset.id) ? " active" : ""}${asset.aiProcessing ? " ai-processing" : ""}${asset.auditFailed ? " audit-failed" : ""}" data-slice-id="${asset.id}" data-slice-parent-id="${escapeHtml(asset.parentId || "")}" data-slice-depth="${depth}" draggable="${asset.aiProcessing ? "false" : "true"}" style="--slice-tree-indent:${Math.min(depth, 6) * 16}px;">
-            ${asset.contentType === "text"
-              ? `<div class="cut-thumb cut-thumb-text" title="${escapeHtml(asset.text?.characters || "空文字")}">${escapeHtml(asset.text?.characters || "T")}</div>`
-              : `<img class="cut-thumb" src="${asset.dataUrl}" alt="${escapeHtml(asset.name)}" data-slice-id="${asset.id}" draggable="false" style="border-radius:${getSliceRadiiCssValue(asset, currentManifest?.screen)};" />`}
-            <div class="cut-meta">
-              <span class="cut-name">${assetNumberById.get(asset.id)}. ${escapeHtml(asset.name)}${renderSliceContentTypeBadge(asset)}${childCount > 0 ? `<span class="cut-parent-badge">父级 · ${childCount}</span>` : ""}</span>
-              <span class="cut-size">${asset.placement.width}px × ${asset.placement.height}px${formatSliceRadiiLabel(asset)}${asset.transparent ? " · 透明 PNG" : ""}${asset.auditFailed ? " · 审计失败 · 需手动调整" : ""}${asset.aiTransparent ? (aiTransparencyCurrent ? " · AI 透明" : " · 子层已变化，需重新 AI 透明") : ""}${getAiInpaintTypeLabel(asset) ? ` · ${getAiInpaintTypeLabel(asset)}` : ""}${asset.svgData ? " · SVG" : ""}${asset.aiRedrawn ? " · AI 重绘" : ""}</span>
-            </div>
-            <details class="cut-action-menu">
-              <summary class="cut-action-trigger">透明</summary>
-              <div class="cut-action-list">
-                <button class="cut-transparent${canRestoreLocalTransparency ? " done" : ""}" type="button" data-transparent-slice="${asset.id}" title="${hasActiveChildren && !canRestoreLocalTransparency ? "父级包含独立子层，请使用 AI 透明清除子层内容" : "本地移除边缘背景"}"${asset.aiProcessing || !supportsTransparency || (hasActiveChildren && !canRestoreLocalTransparency) ? " disabled" : ""}>${canRestoreLocalTransparency ? `已透明 ${renderRestoreIcon()}` : "透明"}</button>
-                <button class="cut-ai-transparent${aiTransparencyCurrent ? " done" : ""}" type="button" data-ai-transparent-slice="${asset.id}"${asset.aiProcessing || !supportsTransparency ? " disabled" : ""}>${aiTransparencyCurrent ? `AI已透明 ${renderRestoreIcon()}` : (asset.aiTransparent ? "重新AI透明" : "AI透明")}</button>
-              </div>
-            </details>
-            <details class="cut-action-menu">
-              <summary class="cut-action-trigger">SVG</summary>
-              <div class="cut-action-list">
-                <button class="cut-svg${asset.svgData && !asset.aiRedrawn ? " done" : ""}" type="button" data-svg-slice="${asset.id}"${asset.aiProcessing || !["background", "image"].includes(asset.contentType) ? " disabled" : ""}>${asset.svgData && !asset.aiRedrawn ? `SVG ${renderRestoreIcon()}` : "转 SVG"}</button>
-                <button class="cut-redraw${asset.aiRedrawn && asset.svgData ? " done" : ""}" type="button" data-redraw-slice="${asset.id}"${asset.aiProcessing || !["background", "image"].includes(asset.contentType) ? " disabled" : ""}>${asset.aiRedrawn && asset.svgData ? `AI SVG ${renderRestoreIcon()}` : "AI 重绘 SVG"}</button>
-              </div>
-            </details>
-            <button class="cut-visibility" type="button" aria-label="${asset.hidden ? "显示" : "隐藏"} ${escapeHtml(asset.name)}" data-toggle-slice="${asset.id}" title="${asset.hidden ? "显示" : "隐藏"}"${asset.aiProcessing ? " disabled" : ""}>${renderVisibilityIcon(asset.hidden)}</button>
-            <button class="cut-settings" type="button" data-open-slice-settings="${asset.id}"${asset.aiProcessing ? " disabled" : ""}>设置</button>
-            <button class="cut-remove" type="button" aria-label="删除 ${escapeHtml(asset.name)}" data-remove-slice="${asset.id}"${asset.aiProcessing ? " disabled" : ""}>×</button>
-            ${asset.aiProcessing ? `<span class="cut-ai-loading"><span class="cut-ai-loading-label">${escapeHtml(asset.aiProcessingLabel || "正在请求 AI 处理切图 · 0s")}</span><button class="cut-ai-cancel" type="button" data-cancel-slice-ai="${asset.id}" aria-label="取消 AI 生成" title="取消 AI 生成"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></span>` : ""}
-          </div>
-        `;
-        }).join("");
-        const dropIndicator = document.createElement("div");
-        dropIndicator.className = "cut-drop-indicator";
-        dropIndicator.hidden = true;
-        cutGrid.appendChild(dropIndicator);
-        requestAnimationFrame(() => {
-          cutGrid.scrollTop = scrollTop;
-        });
-        if (animateReorder) {
-          requestAnimationFrame(() => {
-            cutGrid.querySelectorAll(".cut-item").forEach((item) => item.classList.add("reordered"));
-          });
-        }
-        cutGrid.querySelectorAll(".cut-action-menu").forEach((menu) => {
-          menu.addEventListener("click", (event) => {
-            event.stopPropagation();
-          });
-          menu.addEventListener("toggle", () => {
-            if (menu.open) {
-              cutGrid.querySelectorAll(".cut-action-menu[open]").forEach((otherMenu) => {
-                if (otherMenu !== menu) {
-                  otherMenu.open = false;
-                }
-              });
-              requestAnimationFrame(() => positionCutActionMenu(menu));
-            }
-            requestAnimationFrame(() => {
-              if (cutGrid.querySelector(".cut-action-menu[open]")) {
-                cutGrid.classList.add("menu-open");
-              } else {
-                cutGrid.classList.remove("menu-open");
-              }
-            });
-          });
-        });
-        cutGrid.querySelectorAll("[data-slice-id]").forEach((item) => {
-          item.addEventListener("pointerdown", (event) => {
-            if (getActiveSliceAsset(item.dataset.sliceId)?.aiProcessing) return;
-            if (event.button !== 0 || event.target.closest("button, input, textarea, select, details, .cut-thumb")) return;
-            cutReorderDrag = { pointerId: event.pointerId, sourceId: item.dataset.sliceId, targetId: item.dataset.sliceId, moved: false };
-            item.setPointerCapture?.(event.pointerId);
-          });
-          item.addEventListener("dragstart", (event) => {
-            if (getActiveSliceAsset(item.dataset.sliceId)?.aiProcessing) {
-              event.preventDefault();
-              return;
-            }
-            item.classList.add("dragging");
-            event.dataTransfer.effectAllowed = "move";
-            event.dataTransfer.setData("text/plain", item.dataset.sliceId);
-          });
-          item.addEventListener("dragend", () => {
-            item.classList.remove("dragging");
-            cutGrid.querySelectorAll(".drag-over").forEach((target) => target.classList.remove("drag-over"));
-          });
-          item.addEventListener("dragover", (event) => {
-            event.preventDefault();
-            event.dataTransfer.dropEffect = "move";
-            if (event.currentTarget !== item) return;
-            item.classList.add("drag-over");
-          });
-          item.addEventListener("dragleave", () => item.classList.remove("drag-over"));
-          item.addEventListener("drop", (event) => {
-            event.preventDefault();
-            item.classList.remove("drag-over");
-            const sourceId = event.dataTransfer.getData("text/plain");
-            reorderSliceAsset(sourceId, item.dataset.sliceId);
-          });
-          item.addEventListener("click", (event) => {
-            if (event.target.closest("[data-remove-slice]")) {
-              return;
-            }
-            const shouldSyncDrawer = sliceSettingsDrawer.classList.contains("open");
-            if (event.shiftKey) {
-              selectSliceRange(item.dataset.sliceId, displayAssets.map((asset) => asset.id), event.metaKey || event.ctrlKey);
-            } else if (event.metaKey || event.ctrlKey) {
-              toggleSliceSelection(item.dataset.sliceId);
-            } else {
-              selectOnlySlice(item.dataset.sliceId);
-            }
-            if (shouldSyncDrawer) {
-              sliceSettingsId = activeSliceId;
-            }
-            const card = resultGrid.querySelector(".result-card.slice-mode");
-            const layer = card?.querySelector(".slice-layer");
-            const image = card?.querySelector(".result-canvas img");
-            if (card && layer && image) {
-              renderSliceOverlay(card, layer, image);
-            }
-            renderCutModules(manifest);
-            if (shouldSyncDrawer) {
-              renderSliceSettingsDrawer();
-            }
-          });
-          item.addEventListener("contextmenu", (event) => {
-            if (getActiveSliceAsset(item.dataset.sliceId)?.aiProcessing) return;
-            event.preventDefault();
-            if (!isSliceSelected(item.dataset.sliceId)) {
-              selectOnlySlice(item.dataset.sliceId);
-            } else {
-              activeSliceId = item.dataset.sliceId;
-            }
+        const asset = getActiveSliceAsset(event.id);
+        if (!asset || (asset.aiProcessing && event.type !== "cancel")) return;
+        switch (event.type) {
+          case "select": {
+            const ids = buildCompositeSliceDisplayTree(getActiveResultImage().sliceManifest.assets).map(({ layer }) => layer.id);
+            if (event.shift) selectSliceRange(event.id, ids, event.additive);
+            else if (event.additive) toggleSliceSelection(event.id);
+            else selectOnlySlice(event.id);
             refreshSliceVisibility();
-            renderCutModules(manifest);
-            openSliceSettingsDrawer(activeSliceId);
-          });
-        });
-        cutGrid.querySelectorAll(".cut-thumb").forEach((thumb) => {
-          thumb.addEventListener("click", (event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            openSliceImagePreview(thumb.dataset.sliceId);
-          });
-        });
-        cutGrid.querySelectorAll("[data-remove-slice]").forEach((button) => {
-          button.addEventListener("click", () => {
-            removeSliceAsset(button.dataset.removeSlice);
-          });
-        });
-        cutGrid.querySelectorAll("[data-cancel-slice-ai]").forEach((button) => {
-          button.addEventListener("click", (event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            cancelSliceAiRequest(button.dataset.cancelSliceAi);
-          });
-        });
-        cutGrid.querySelectorAll("[data-toggle-slice]").forEach((button) => {
-          button.addEventListener("click", (event) => {
-            event.stopPropagation();
-            const asset = getActiveSliceAsset(button.dataset.toggleSlice);
-            if (!asset) return;
+            renderCutModules(currentManifest);
+            if (activeSliceId) openSliceSettingsDrawer(activeSliceId);
+            else closeSliceSettingsDrawer();
+            break;
+          }
+          case "preview": openSliceImagePreview(event.id); break;
+          case "remove": removeSliceAsset(event.id); break;
+          case "cancel": cancelSliceAiRequest(event.id); break;
+          case "visibility":
             recordSliceHistory();
             asset.hidden = !asset.hidden;
             scheduleWorkspaceDraftSave();
             refreshSliceVisibility();
             renderCutModules(currentManifest);
-          });
-        });
-        cutGrid.querySelectorAll("[data-open-slice-settings]").forEach((button) => {
-          button.addEventListener("click", (event) => {
-            event.stopPropagation();
-            if (!isSliceSelected(button.dataset.openSliceSettings)) {
-              selectOnlySlice(button.dataset.openSliceSettings);
-            } else {
-              activeSliceId = button.dataset.openSliceSettings;
-            }
+            break;
+          case "settings":
+            if (!isSliceSelected(event.id)) selectOnlySlice(event.id);
+            else activeSliceId = event.id;
             refreshSliceVisibility();
             renderCutModules(currentManifest);
             openSliceSettingsDrawer(activeSliceId);
-          });
-        });
-        cutGrid.querySelectorAll("[data-transparent-slice]").forEach((button) => {
-          button.addEventListener("click", async (event) => {
-            event.stopPropagation();
-            button.closest(".cut-action-menu")?.removeAttribute("open");
-            const asset = getActiveSliceAsset(button.dataset.transparentSlice);
-            if (asset?.transparent && !asset.aiTransparent) {
-              restoreSliceTransparency(asset);
-            } else {
-              await makeSliceTransparent(button.dataset.transparentSlice);
-            }
-          });
-        });
-        cutGrid.querySelectorAll("[data-ai-transparent-slice]").forEach((button) => {
-          button.addEventListener("click", async (event) => {
-            event.stopPropagation();
-            button.closest(".cut-action-menu")?.removeAttribute("open");
-            const asset = getActiveSliceAsset(button.dataset.aiTransparentSlice);
-            const assets = getActiveResultImage()?.sliceManifest?.assets || [];
-            if (asset?.aiTransparent && isAiTransparentChildCleanupCurrent(asset, assets)) {
-              restoreSliceTransparency(asset);
-            } else {
-              await makeSliceAiTransparent(button.dataset.aiTransparentSlice);
-            }
-          });
-        });
-        cutGrid.querySelectorAll("[data-svg-slice]").forEach((button) => {
-          button.addEventListener("click", async (event) => {
-            event.stopPropagation();
-            button.closest(".cut-action-menu")?.removeAttribute("open");
-            const asset = getActiveSliceAsset(button.dataset.svgSlice);
-            if (asset?.svgData && !asset.aiRedrawn) {
-              restoreSliceSvg(asset);
-            } else {
-              await convertSliceToSvg(button.dataset.svgSlice);
-            }
-          });
-        });
-        cutGrid.querySelectorAll("[data-redraw-slice]").forEach((button) => {
-          button.addEventListener("click", async (event) => {
-            event.stopPropagation();
-            button.closest(".cut-action-menu")?.removeAttribute("open");
-            const asset = getActiveSliceAsset(button.dataset.redrawSlice);
-            if (asset?.aiRedrawn && asset.svgData) {
-              restoreSliceSvg(asset);
-            } else {
-              await redrawSliceToSvg(button.dataset.redrawSlice);
-            }
-          });
-        });
+            break;
+          case "transparent":
+            if (asset.transparent && !asset.aiTransparent) restoreSliceTransparency(asset);
+            else await makeSliceTransparent(event.id);
+            break;
+          case "ai-cutout":
+            await openSliceSmartCutout(event.id);
+            break;
+          case "restore-position":
+            await restoreSelectedSlicePositions();
+            break;
+        }
       }
 
       function renderRestoreIcon() {
@@ -2370,13 +2045,10 @@
         }
         sliceSettingsId = id;
         renderSliceSettingsDrawer();
-        if (sliceSettingsPosition) {
-          setSliceSettingsPosition(sliceSettingsPosition);
-        } else {
-          sliceSettingsDrawer.style.left = "";
-          sliceSettingsDrawer.style.top = "";
-          sliceSettingsDrawer.style.right = "20px";
-        }
+        sliceSettingsPosition = null;
+        sliceSettingsDrawer.style.left = "";
+        sliceSettingsDrawer.style.top = "";
+        sliceSettingsDrawer.style.right = "";
         sliceSettingsDrawer.classList.add("open");
         sliceSettingsDrawer.setAttribute("aria-hidden", "false");
       }
@@ -2483,6 +2155,7 @@
         delete asset.transparencyRestoreState;
         delete asset.transparencyRestoreDataUrl;
         delete asset.svgRestoreState;
+        clearSliceImageProcessingState(asset);
         delete asset.aiCompleteSourceAssetId;
         if (
           sliceImageEditorState.pendingAiInpaintRawFullDataUrl
@@ -2745,10 +2418,7 @@
         const isAnyProcessing = selectedAssets.some((entry) => entry.aiProcessing);
         const hasLockedGeometry = selectedAssets.some((entry) => isLockedAiCompleteAsset(entry));
         const contentType = normalizeSliceContentType(asset.contentType, "image");
-        const allAssets = getActiveResultImage()?.sliceManifest?.assets || [];
-        const parentCandidates = allAssets.filter((candidate) => candidate.id !== asset.id
-          && ["background", "image"].includes(candidate.contentType)
-          && containsSlicePlacement(candidate.placement, asset.placement));
+        const visibleContentType = contentType === "text" ? "text" : "image";
         const textDefinition = contentType === "text" ? normalizeSliceTextDefinition(asset.text, asset.placement) : null;
         const getSharedValue = (field) => {
           const values = selectedAssets.map((entry) => field === "radius" ? getSliceRadius(entry, currentManifest?.screen) : entry.placement[field]);
@@ -2760,35 +2430,24 @@
         };
         sliceSettingsTitle.textContent = isMultiSelection ? `已选择 ${selectedAssets.length} 个切图` : asset.name;
         sliceSettingsBody.innerHTML = `
+          <div class="slice-inspector-section-title">属性</div>
           <label class="slice-settings-field slice-settings-name-field">
             <span>标题</span>
             <input type="text" value="${isMultiSelection ? "" : escapeHtml(asset.name)}"${isMultiSelection ? ' placeholder="输入后应用到全部"' : ""} data-slice-name="${asset.id}" maxlength="80"${isAnyProcessing ? " disabled" : ""} />
           </label>
           ${isMultiSelection ? "" : `
-            <div class="slice-settings-grid">
-              <label class="slice-settings-field">
-                <span>图层类型</span>
-                <select data-slice-content-type-setting="${asset.id}"${isAnyProcessing ? " disabled" : ""}>
-                  <option value="unclassified"${contentType === "unclassified" ? " selected" : ""}>未分类</option>
-                  <option value="background"${contentType === "background" ? " selected" : ""}>背景</option>
-                  <option value="image"${contentType === "image" ? " selected" : ""}>图片</option>
-                  <option value="text"${contentType === "text" ? " selected" : ""}>文字</option>
-                </select>
-              </label>
-              <label class="slice-settings-field">
-                <span>所属父级</span>
-                <select data-slice-parent-setting="${asset.id}"${isAnyProcessing ? " disabled" : ""}>
-                  <option value="">无父级</option>
-                  ${parentCandidates.map((candidate) => `<option value="${escapeHtml(candidate.id)}"${asset.parentId === candidate.id ? " selected" : ""}>${escapeHtml(candidate.name)}</option>`).join("")}
-                </select>
-              </label>
-            </div>
-            ${contentType === "unclassified" ? '<div class="slice-settings-warning">未分类图层不会参与导入，请先选择背景、图片或文字。</div>' : ""}
-            ${contentType === "background" && asset.backgroundCleanupStatus === "pending" ? '<div class="slice-settings-warning">此背景尚未补齐，导入时可能出现重复视觉。</div>' : ""}
+            <label class="slice-settings-field">
+              <span>图层类型</span>
+              <select data-slice-content-type-setting="${asset.id}"${isAnyProcessing ? " disabled" : ""}>
+                <option value="image"${visibleContentType === "image" ? " selected" : ""}>图片</option>
+                <option value="text"${visibleContentType === "text" ? " selected" : ""}>文字</option>
+              </select>
+            </label>
+            ${contentType === "background" && asset.backgroundCleanupStatus === "pending" ? '<div class="slice-settings-warning">此图片尚未补齐，导入时可能出现重复视觉。</div>' : ""}
             ${textDefinition ? `
               <label class="slice-settings-field">
                 <span>文字内容</span>
-                <textarea data-slice-text-field="characters">${escapeHtml(textDefinition.characters)}</textarea>
+                <textarea data-slice-text-field="characters" placeholder="输入文字内容">${escapeHtml(textDefinition.characters)}</textarea>
               </label>
               <div class="slice-settings-grid">
                 <label class="slice-settings-field"><span>字体提示</span><input type="text" value="${escapeHtml(textDefinition.fontFamily)}" placeholder="例如 Microsoft YaHei" data-slice-text-field="fontFamily"></label>
@@ -2810,6 +2469,7 @@
               <button class="slice-settings-recognize" type="button" data-recognize-slice-text="${asset.id}"${isAnyProcessing ? " disabled" : ""}>重新 AI 识别文字</button>
             ` : ""}
           `}
+          <div class="slice-inspector-section-title">布局</div>
           <div class="slice-settings-grid">
             ${renderSliceNumberControl(asset, "x", "X 坐标", getSharedValue("x"))}
             ${renderSliceNumberControl(asset, "y", "Y 坐标", getSharedValue("y"))}
@@ -2867,22 +2527,13 @@
           }
         });
         sliceSettingsBody.querySelector("[data-slice-content-type-setting]")?.addEventListener("change", async (event) => {
-          await confirmSliceContentType(asset.id, event.currentTarget.value);
+          const nextContentType = event.currentTarget.value;
+          await confirmSliceContentType(asset.id, nextContentType);
           sliceSettingsId = asset.id;
           renderSliceSettingsDrawer();
-        });
-        sliceSettingsBody.querySelector("[data-slice-parent-setting]")?.addEventListener("change", (event) => {
-          const parentId = event.currentTarget.value || null;
-          if (parentId && !isValidSliceParent(asset, parentId, allAssets)) {
-            setStatus("所选父级必须是完整包含当前图层的背景或图片，且不能形成循环层级。", "warning");
-            renderSliceSettingsDrawer();
-            return;
+          if (nextContentType === "text") {
+            requestAnimationFrame(() => sliceSettingsBody.querySelector('[data-slice-text-field="characters"]')?.focus());
           }
-          recordSliceHistory();
-          asset.parentId = parentId;
-          asset.parentAssignment = "manual";
-          scheduleWorkspaceDraftSave();
-          renderCutModules(currentManifest);
         });
         sliceSettingsBody.querySelectorAll("[data-slice-text-field]").forEach((input) => {
           input.addEventListener("change", () => {
@@ -3002,9 +2653,10 @@
       function renderEmptyCutModules() {
         cutSection.classList.remove("open");
         closeSliceSettingsDrawer();
+        renderSelectedSliceActions();
         exportSlicesButton.disabled = true;
         transparentAllButton.disabled = true;
-        cutGrid.innerHTML = "";
+        sliceListView?.update({ imageId: "", rows: [], animateReorder: false });
       }
 
       function ensureSliceState(manifest) {
@@ -3022,20 +2674,27 @@
           image.sliceManifest.assets = [];
         }
         image.sliceManifest.assets = normalizeCompositeSliceLayers(image.sliceManifest.assets);
+        image.sliceManifest.assets.forEach((asset) => {
+          if (normalizeSliceContentType(asset.contentType, "image") === "unclassified") {
+            asset.contentType = "image";
+          }
+        });
         reconcileAutomaticSliceParents(image.sliceManifest.assets);
         normalizeSliceAssetNames(image.sliceManifest.assets);
       }
 
       function renderSliceContentTypeBadge(asset) {
         const type = normalizeSliceContentType(asset?.contentType, "image");
-        const label = { unclassified: "未分类", background: "背景", image: "图片", text: "文字" }[type];
-        return `<span class="cut-type-badge ${type}">${label}</span>`;
+        const visibleType = type === "text" ? "text" : "image";
+        const label = visibleType === "text" ? "文字" : "图片";
+        return `<span class="cut-type-badge ${visibleType}">${label}</span>`;
       }
 
       function cloneSliceAssets(assets) {
         return assets.map((asset) => ({
           ...asset,
           placement: asset.placement ? { ...asset.placement } : asset.placement,
+          initialPlacement: asset.initialPlacement ? { ...asset.initialPlacement } : asset.initialPlacement,
           text: asset.text ? {
             ...asset.text,
             shadow: asset.text.shadow ? { ...asset.text.shadow } : null
@@ -3046,6 +2705,43 @@
         }));
       }
 
+      function hasSliceInitialPositionChanged(asset) {
+        const placement = asset?.placement;
+        const initial = asset?.initialPlacement;
+        return Boolean(placement && initial)
+          && (Number(placement.x) !== Number(initial.x) || Number(placement.y) !== Number(initial.y));
+      }
+
+      async function restoreSelectedSlicePositions() {
+        const activeImage = getActiveResultImage();
+        const selectedAssets = getSelectedSliceAssets().filter((entry) => entry && !entry.aiProcessing);
+        if (!activeImage || selectedAssets.length === 0) return;
+        const changedAssets = selectedAssets.filter(hasSliceInitialPositionChanged);
+        if (changedAssets.length === 0) {
+          setStatus("所选切图已经在初始位置。", "info");
+          return;
+        }
+        recordSliceHistory();
+        for (const asset of changedAssets) {
+          const initial = asset.initialPlacement;
+          asset.placement = normalizeSlicePlacement({
+            ...asset.placement,
+            x: initial.x,
+            y: initial.y
+          }, currentManifest?.screen);
+          reconcileAutomaticSliceParents(activeImage.sliceManifest?.assets || []);
+          if (shouldRefreshSliceCropAfterPositionRestore(asset)) {
+            await updateSliceAssetCrop(asset.id);
+          }
+        }
+        activeSliceId = changedAssets[0].id;
+        refreshSliceVisibility();
+        renderCutModules(currentManifest);
+        if (sliceSettingsDrawer.classList.contains("open")) renderSliceSettingsDrawer();
+        scheduleWorkspaceDraftSave();
+        setStatus(`已还原 ${changedAssets.length} 个切图的位置。`, "success");
+      }
+
       function setSliceCanvasTool(tool) {
         sliceCanvasTool = tool === "draw" ? "draw" : "select";
         sliceToolMode.querySelectorAll("[data-slice-tool]").forEach((button) => {
@@ -3053,9 +2749,6 @@
           button.classList.toggle("active", active);
           button.setAttribute("aria-pressed", String(active));
         });
-        sliceToolHint.textContent = sliceCanvasTool === "draw"
-          ? "可在已有框内连续创建背景、图片或文字层"
-          : "选择、移动或调整已有图层";
         const card = resultGrid.querySelector(".result-card.slice-mode");
         card?.classList.toggle("slice-draw-mode", sliceCanvasTool === "draw");
       }
@@ -3085,13 +2778,11 @@
           return;
         }
         recordSliceHistory();
-        asset.contentType = normalizeSliceContentType(contentType, "unclassified");
-        if (asset.contentType === "background") {
-          asset.backgroundCleanupStatus = "pending";
-          asset.parentId = inferSmallestContainingBackgroundId(asset, activeImage.sliceManifest.assets);
-        } else {
-          asset.parentId = inferSmallestContainingBackgroundId(asset, activeImage.sliceManifest.assets);
-          delete asset.backgroundCleanupStatus;
+        asset.contentType = contentType === "text" ? "text" : "image";
+        asset.parentId = inferSmallestContainingBackgroundId(asset, activeImage.sliceManifest.assets);
+        delete asset.backgroundCleanupStatus;
+        if (asset.contentType === "text") {
+          asset.text = normalizeSliceTextDefinition(asset.text, asset.placement);
         }
         reconcileAutomaticSliceParents(activeImage.sliceManifest.assets);
         closeSliceTypePopover();
@@ -3099,7 +2790,6 @@
         const card = resultGrid.querySelector(".result-card.slice-mode");
         renderSliceOverlay(card, card?.querySelector(".slice-layer"), card?.querySelector(".result-canvas img"));
         scheduleWorkspaceDraftSave();
-        if (asset.contentType === "text") await recognizeSliceText(asset);
       }
 
       function reconcileAutomaticSliceParents(assets = []) {
@@ -3219,6 +2909,7 @@
           id: `slice_${activeResultIndex + 1}_${Date.now().toString(36)}_${assets.length + 1}`,
           name,
           placement: offsetPlacement,
+          initialPlacement: { x: offsetPlacement.x, y: offsetPlacement.y },
           aiCompleteSourceAssetId: null,
           aiProcessing: false,
           aiProcessingLabel: "",
@@ -3414,7 +3105,14 @@
               return;
             }
             const lockedAiComplete = isLockedAiCompleteAsset(asset);
-            if (!lockedAiComplete && hasProcessedSliceResult(asset) && !asset.processedResetConfirmed) {
+            const editMode = handle?.dataset.sliceHandle || "move";
+            const preserveProcessedResult = shouldPreserveProcessedSliceResult(asset, editMode);
+            if (
+              !lockedAiComplete
+              && editMode !== "move"
+              && hasProcessedSliceResult(asset)
+              && !asset.processedResetConfirmed
+            ) {
               if (!confirmProcessedSliceReset(asset)) {
                 return;
               }
@@ -3436,19 +3134,18 @@
             event.stopPropagation();
             if (!lockedAiComplete) recordSliceHistory();
             selectOnlySlice(asset.id);
-            if (sliceSettingsDrawer.classList.contains("open")) {
-              sliceSettingsId = activeSliceId;
-              renderSliceSettingsDrawer();
-            }
+            if (activeSliceId) openSliceSettingsDrawer(activeSliceId);
+            else closeSliceSettingsDrawer();
             layer.setPointerCapture(event.pointerId);
             const point = pointToScreenCoords(event.clientX, event.clientY, imageRect, currentManifest.screen);
             sliceEdit = {
               id: asset.id,
               pointerId: event.pointerId,
-              mode: handle?.dataset.sliceHandle || "move",
+              mode: editMode,
               startX: point.x,
               startY: point.y,
               original: { ...asset.placement },
+              preserveProcessedResult,
               aiCompleteSourceAssetId: lockedAiComplete ? asset.id : null,
               changed: false
             };
@@ -3545,11 +3242,14 @@
             const editId = sliceEdit.id;
             const changed = sliceEdit.changed;
             const editMode = sliceEdit.mode;
+            const preserveProcessedResult = sliceEdit.preserveProcessedResult === true;
             sliceEdit = null;
             if (!changed) {
               return;
             }
             if (editMode === "radius") {
+              scheduleWorkspaceDraftSave();
+            } else if (editMode === "move" && preserveProcessedResult) {
               scheduleWorkspaceDraftSave();
             } else {
               await updateSliceAssetCrop(editId);
@@ -3608,16 +3308,22 @@
         const assets = activeImage?.sliceManifest?.assets || [];
 
         const visibleAssets = repairPreviewActive ? [] : assets.filter((asset) => !asset.hidden);
-        const cutouts = visibleAssets.map((asset) => {
+        const cutouts = visibleAssets.map((asset, previewIndex) => {
           const placement = asset.placement;
+          const previewDataUrl = getSliceActiveImageDataUrl(asset);
+          const hasProcessedPreview = Boolean(
+            previewDataUrl
+            && (asset.transparent || asset.aiTransparent || asset.svgData || asset.aiRedrawn
+              || asset.localInpaintMethod || asset.upscaleMethod)
+          );
           return `
-            <div class="slice-cutout" style="
+            <div class="slice-cutout${hasProcessedPreview ? " processed" : ""}" style="
               left:${placement.x * scaleX}px;
               top:${placement.y * scaleY}px;
               width:${placement.width * scaleX}px;
               height:${placement.height * scaleY}px;
               border-radius:${getSliceRadiiCssValue(asset, currentManifest?.screen)};
-            "></div>
+            ">${hasProcessedPreview ? `<img data-slice-preview-index="${previewIndex}" alt="" draggable="false">` : ""}</div>
           `;
         });
 
@@ -3699,6 +3405,11 @@
           : [];
 
         layer.innerHTML = [...cutouts, ...boxes, ...overlapPreviews].join("");
+        layer.querySelectorAll("[data-slice-preview-index]").forEach((preview) => {
+          const asset = visibleAssets[Number(preview.dataset.slicePreviewIndex)];
+          const previewDataUrl = getSliceActiveImageDataUrl(asset);
+          if (previewDataUrl) preview.src = previewDataUrl;
+        });
         layer.querySelectorAll("[data-slice-id]").forEach((button) => {
           button.addEventListener("click", (event) => {
             event.stopPropagation();
@@ -3836,34 +3547,48 @@
       function hasRunningSliceAiTasks() {
         return Boolean(backgroundDecompositionRequest)
           || Boolean(sliceImageEditorState?.processing)
-          || (currentManifest?.resultImages || []).some((image) =>
-          (image.sliceManifest?.assets || []).some((asset) => asset.aiProcessing)
-        );
+          || sliceAiControllers.size > 0
+          || localImageTaskProgress.size > 0;
       }
 
-      function beginSliceAiRequest(asset, progressId) {
-        sliceAiControllers.get(asset.id)?.controller.abort();
-        const controller = new AbortController();
-        sliceAiControllers.set(asset.id, { controller, progressId });
+      function beginSliceAiRequest(asset, progressId, { blocksUi = false } = {}) {
+        const controller = sliceAiControllers.begin(asset.id, progressId, blocksUi);
+        updateImageToCodeButtonState();
         return controller;
       }
 
       function finishSliceAiRequest(asset, controller) {
-        if (sliceAiControllers.get(asset.id)?.controller === controller) {
-          sliceAiControllers.delete(asset.id);
+        if (sliceAiControllers.finish(asset.id, controller)) {
+          updateImageToCodeButtonState();
+        }
+      }
+
+      function finalizeSliceAiRequest(asset, controller, { releaseGlobalBusy = false } = {}) {
+        const running = sliceAiControllers.get(asset.id);
+        if (running && running.controller !== controller) return;
+        finishSliceAiRequest(asset, controller);
+        const currentAsset = getActiveSliceAsset(asset?.id) || asset;
+        try {
+          setSliceAiProcessing(currentAsset, "", false);
+        } finally {
+          if (releaseGlobalBusy) releaseBusyIfIdle();
         }
       }
 
       function cancelSliceAiRequest(id) {
         const request = sliceAiControllers.get(id);
         const asset = getActiveSliceAsset(id);
+        const localRequest = localImageTaskProgress.get(id);
+        if (localRequest && asset?.aiProcessing) {
+          setSliceAiProcessing(asset, "正在取消本地处理…", true);
+          fetchBackend(`/api/progress/${encodeURIComponent(localRequest.progressId)}/cancel`, { method: "POST" }).catch(() => {});
+          return;
+        }
         if (!request || !asset?.aiProcessing) return;
         fetchBackend(`/api/progress/${encodeURIComponent(request.progressId)}/cancel`, { method: "POST" }).catch(() => {});
         request.controller.abort();
-        sliceAiControllers.delete(id);
         if (aiCompletePreview?.sliceId === id) aiCompletePreview = null;
-        setSliceAiProcessing(asset, "", false);
-        releaseBusyIfIdle();
+        finalizeSliceAiRequest(asset, request.controller, { releaseGlobalBusy: request.blocksUi });
       }
 
       function startAiProgressPolling(progressId, onProgress) {
@@ -3874,6 +3599,7 @@
             const response = await fetch(`${PROXY_BASE_URL}/api/progress/${encodeURIComponent(progressId)}`);
             if (response.ok) {
               const progress = await response.json();
+              if (stopped) return;
               onProgress(progress);
               if (progress.status !== "running") stopped = true;
             }
@@ -4750,11 +4476,7 @@
           : fallbackMessage;
         asset.aiProcessingLabel = `${message} · ${progress.elapsedSeconds}s`;
         asset.aiProgressLogs = [];
-        const item = cutGrid.querySelector(`[data-slice-id="${asset.id}"]`);
-        const loading = item?.querySelector(".cut-ai-loading-label");
-        if (loading) {
-          loading.textContent = asset.aiProcessingLabel;
-        }
+        sliceListView?.updateProgress(asset.id, asset.aiProcessingLabel);
         const settingsButton = sliceSettingsBody.querySelector(`[data-preview-ai-complete="${asset.id}"]`);
         if (settingsButton) settingsButton.textContent = asset.aiProcessingLabel;
       }
@@ -4855,14 +4577,16 @@
         if (!Number.isFinite(value)) {
           return;
         }
-        const changesCrop = ["x", "y", "width", "height"].includes(field);
-        if (changesCrop) {
+        const changesPlacement = ["x", "y", "width", "height"].includes(field);
+        const changesCrop = ["width", "height"].includes(field);
+        if (changesPlacement) {
           const nextPlacement = normalizeSlicePlacement({
             ...asset.placement,
             [field]: value
           }, currentManifest?.screen);
           if (
             hasSlicePlacementChanged(asset.placement, nextPlacement)
+            && changesCrop
             && hasProcessedSliceResult(asset)
             && !asset.processedResetConfirmed
           ) {
@@ -4902,7 +4626,9 @@
           return;
         }
         try {
-          if (field !== "radius") {
+          if (shouldPreserveProcessedSliceResult(asset, field)) {
+            scheduleWorkspaceDraftSave();
+          } else if (field !== "radius") {
             await updateSliceAssetCrop(id);
           } else {
             scheduleWorkspaceDraftSave();
@@ -5099,7 +4825,7 @@
           id,
           name,
           type: "manual_slice",
-          contentType: "unclassified",
+          contentType: "image",
           parentId: null,
           placement: normalizedPlacement,
           radius: 0,
@@ -5175,6 +4901,7 @@
         delete asset.transparencyRestoreState;
         delete asset.transparencyRestoreDataUrl;
         delete asset.svgRestoreState;
+        clearSliceImageProcessingState(asset);
         delete asset.processedResetConfirmed;
         asset.radii = getSliceRadii(asset, currentManifest?.screen);
         asset.radius = Math.max(...Object.values(asset.radii));
@@ -5310,6 +5037,287 @@
         }
       }
 
+      function ensureSliceCutoutEditor() {
+        if (sliceCutoutEditorView) return sliceCutoutEditorView;
+        const host = document.getElementById("sliceCutoutEditorRoot");
+        if (!host || typeof ImageToSliceVue.mountCutoutEditor !== "function") {
+          throw new Error("智能抠图编辑器尚未加载，请重新构建并刷新插件");
+        }
+        sliceCutoutEditorView = ImageToSliceVue.mountCutoutEditor(host, {
+          request: fetchBackend,
+          commit: commitSliceImageEditor,
+          onTaskState: handleLocalImageTaskState,
+          onClose: handleSliceCutoutEditorClosed
+        });
+        return sliceCutoutEditorView;
+      }
+
+      function createLocalSourceSignature(dataUrl) {
+        const value = String(dataUrl || "");
+        return `${value.length}:${value.slice(-48)}`;
+      }
+
+      function handleLocalImageTaskState(state) {
+        const asset = getActiveSliceAsset(state.assetId);
+        if (!asset) return;
+        const operationLabel = state.operation === "inpaint" ? "本地 LaMa 修复" : "Real-ESRGAN 高清化";
+        if (state.status === "running") {
+          const previous = localImageTaskProgress.get(asset.id);
+          previous?.stopProgress?.();
+          const stopProgress = startAiProgressPolling(state.progressId, (progress) => {
+            updateSliceAiProgress(asset, progress, operationLabel);
+          });
+          localImageTaskProgress.set(asset.id, {
+            progressId: state.progressId,
+            stopProgress,
+            submittedAssetDataUrl: asset.dataUrl
+          });
+          setSliceAiProcessing(asset, `${operationLabel}排队中 · 0s`, true);
+          return;
+        }
+        const activeTask = localImageTaskProgress.get(asset.id);
+        activeTask?.stopProgress?.();
+        localImageTaskProgress.delete(asset.id);
+        if (state.status === "completed") {
+          setSliceAiProcessing(asset, "", false);
+          renderCutModules(currentManifest);
+          return;
+        }
+        setSliceAiProcessing(asset, "", false);
+        if (!/取消/.test(String(state.error || ""))) {
+          setStatus(`${operationLabel}失败：${state.error || "未知错误"}`, "error");
+        }
+      }
+
+      function handleSliceCutoutEditorClosed() {
+        activeSmartCutoutContext = null;
+        const next = smartCutoutQueue.shift();
+        if (next) queuePreparedSmartCutout(next);
+      }
+
+      function queuePreparedSmartCutout(context) {
+        if (activeSmartCutoutContext) {
+          const existingIndex = smartCutoutQueue.findIndex((entry) => entry.assetId === context.assetId);
+          if (existingIndex >= 0) smartCutoutQueue.splice(existingIndex, 1, context);
+          else smartCutoutQueue.push(context);
+          setStatus(`“${context.name}”已完成父层清理，等待当前智能抠图编辑完成。`, "success");
+          return;
+        }
+        activeSmartCutoutContext = context;
+        let editor;
+        try {
+          editor = ensureSliceCutoutEditor();
+        } catch (error) {
+          activeSmartCutoutContext = null;
+          setStatus(`无法打开智能抠图：${error.message || String(error)}`, "error");
+          return;
+        }
+        Promise.resolve(editor.open({
+          assetId: context.assetId,
+          name: context.name,
+          dataUrl: context.dataUrl,
+          contentType: context.contentType,
+          maskDataUrl: context.maskDataUrl,
+          settings: context.settings,
+          childSignature: context.childSignature,
+          openMode: context.openMode || "cutout",
+          sourcePixelWidth: context.sourcePixelWidth,
+          sourcePixelHeight: context.sourcePixelHeight,
+          outputPixelWidth: context.outputPixelWidth,
+          outputPixelHeight: context.outputPixelHeight,
+          upscaleScale: context.upscaleScale,
+          sourceSignature: context.sourceSignature,
+          processingRestore: context.processingRestore
+        })).catch((error) => {
+          activeSmartCutoutContext = null;
+          setStatus(`无法打开智能抠图：${error.message || String(error)}`, "error");
+          const next = smartCutoutQueue.shift();
+          if (next) queuePreparedSmartCutout(next);
+        });
+      }
+
+      async function commitSliceImageEditor(result) {
+        const asset = getActiveSliceAsset(result.assetId);
+        if (!asset) {
+          throw new Error("AI 抠图对应的切图已不存在，未保存结果。");
+        }
+        if (result.sourceSignature && createLocalSourceSignature(asset.dataUrl) !== result.sourceSignature) {
+          throw new Error(`“${asset.name}”在编辑期间已被其他操作修改，请关闭后重新打开。`);
+        }
+        const context = activeSmartCutoutContext?.assetId === result.assetId
+          ? activeSmartCutoutContext
+          : null;
+        const previousAsset = structuredClone(asset);
+        const previousUndoStack = sliceUndoStack.slice();
+        const previousRedoStack = sliceRedoStack.slice();
+        recordSliceHistory();
+        try {
+          for (const operation of result.operations || []) {
+            if (operation.kind === "restore") {
+              if (operation.scope === "image-processing") restoreSliceImageProcessingState(asset);
+              else restoreSliceTransparencyState(asset);
+              asset.dataUrl = operation.dataUrl;
+              continue;
+            }
+            if (operation.kind === "cutout") {
+              applySliceTransparencyResult(asset, { dataUrl: operation.dataUrl, ai: true });
+              asset.cutoutMethod = "sam2-local";
+              asset.cutoutMaskDataUrl = operation.maskDataUrl;
+              asset.cutoutSettings = { ...operation.settings };
+              asset.cutoutSessionSourceSignature = operation.childSignature || "";
+              asset.aiTransparentChildSignature = operation.childSignature || "";
+              asset.aiTransparentExcludedChildCount = context?.childCount || 0;
+              if (context?.childCount) {
+                asset.compositeCleanupStatus = "clean";
+                if (asset.contentType === "background") asset.backgroundCleanupStatus = "clean";
+              }
+              continue;
+            }
+            applySliceImageProcessingResult(asset, {
+              ...operation,
+              operation: operation.kind,
+              sourceSignature: operation.kind === "inpaint" ? operation.sourceSignature : undefined
+            });
+          }
+          asset.dataUrl = result.dataUrl;
+          activeSliceId = asset.id;
+          refreshSliceVisibility();
+          renderCutModules(currentManifest);
+          scheduleWorkspaceDraftSave();
+          await flushWorkspaceDraftChanges();
+          const labels = [...new Set((result.operations || []).map((operation) => ({
+            cutout: "智能抠图",
+            inpaint: "局部修复",
+            upscale: "高清化",
+            restore: "图片恢复"
+          })[operation.kind]))];
+          setStatus(`已保存${labels.length ? ` ${labels.join("、")}` : "图像处理"}：${asset.name}`, "success");
+        } catch (error) {
+          Object.keys(asset).forEach((key) => delete asset[key]);
+          Object.assign(asset, previousAsset);
+          sliceUndoStack.splice(0, sliceUndoStack.length, ...previousUndoStack);
+          sliceRedoStack.splice(0, sliceRedoStack.length, ...previousRedoStack);
+          refreshSliceVisibility();
+          renderCutModules(currentManifest);
+          throw error;
+        }
+      }
+
+      async function openSliceSmartCutout(id) {
+        const asset = getActiveSliceAsset(id);
+        if (!asset || asset.aiProcessing || !["background", "image"].includes(asset.contentType)) return;
+        const allAssets = getActiveResultImage()?.sliceManifest?.assets || [];
+        const childRegions = getDirectChildRemovalRegions(asset, allAssets);
+        const childSignature = getDirectChildRemovalSignature(asset, allAssets);
+        const restoreState = createSliceTransparencyRestoreState(asset);
+        const sourceDataUrl = asset.dataUrl || restoreState.dataUrl;
+        if (!sourceDataUrl) {
+          setStatus(`“${asset.name}”没有可用于智能抠图的原图。`, "error");
+          return;
+        }
+
+        let cutoutSourceDataUrl = sourceDataUrl;
+        if (childRegions.length) {
+          const progressId = `${createAiProgressId("smart-cutout")}_cleanup`;
+          const controller = beginSliceAiRequest(asset, progressId);
+          const processingMessage = `正在清除 ${childRegions.length} 个子层，完成后打开智能抠图`;
+          setSliceAiProcessing(asset, `${processingMessage} · 0s`, true);
+          const stopProgress = startAiProgressPolling(progressId, (progress) => updateSliceAiProgress(asset, progress, processingMessage));
+          try {
+            const maskDataUrl = createAiCompleteRegionsMaskDataUrl(asset.placement, childRegions);
+            try {
+              const localResult = await requestLocalLamaInpaint({
+                asset,
+                sourceDataUrl,
+                maskDataUrl,
+                progressId,
+                signal: controller.signal,
+                maskExpand: 3,
+                maskFeather: 2
+              });
+              cutoutSourceDataUrl = localResult.dataUrl;
+            } catch (localError) {
+              if (localError?.name === "AbortError") throw localError;
+              setSliceAiProcessing(asset, "本地 LaMa 不可用，正在尝试云端补齐", true);
+              const blendMaskDataUrl = await createInnerFeatherMaskDataUrl(
+                maskDataUrl,
+                Math.round(clampNumber(Math.min(asset.placement.width, asset.placement.height) * 0.008, 3, 12, 6))
+              );
+              const image = await requestAiInpaint({
+                fetchBackend,
+                signal: controller.signal,
+                sourceDataUrl,
+                maskDataUrl,
+                name: asset.name,
+                width: asset.placement.width,
+                height: asset.placement.height,
+                prompt: buildCompositeParentCleanupPrompt(asset, childRegions),
+                completeRegions: childRegions.map((region) => ({
+                  x: Math.round(region.x - asset.placement.x),
+                  y: Math.round(region.y - asset.placement.y),
+                  width: Math.round(region.width),
+                  height: Math.round(region.height)
+                })),
+                progressId
+              });
+              setSliceAiProcessing(asset, "正在合成纯父层", true);
+              cutoutSourceDataUrl = await compositeAiInpaintResult(sourceDataUrl, image.dataUrl, blendMaskDataUrl);
+            }
+            controller.signal.throwIfAborted();
+            if (sliceAiControllers.get(id)?.controller !== controller) return;
+          } catch (error) {
+            if (error?.name !== "AbortError") {
+              setStatus(`父层清理失败：${error.message || String(error)}`, "error");
+            }
+            return;
+          } finally {
+            stopProgress();
+            finalizeSliceAiRequest(asset, controller);
+          }
+        }
+
+        const canReuseMask = asset.cutoutMethod === "sam2-local"
+          && String(asset.cutoutSessionSourceSignature || "") === childSignature;
+        queuePreparedSmartCutout({
+          assetId: asset.id,
+          name: asset.name,
+          contentType: asset.contentType,
+          dataUrl: cutoutSourceDataUrl,
+          childSignature,
+          childCount: childRegions.length,
+          maskDataUrl: canReuseMask ? asset.cutoutMaskDataUrl || null : null,
+          settings: canReuseMask ? asset.cutoutSettings || null : null,
+          openMode: "cutout",
+          sourceSignature: createLocalSourceSignature(asset.dataUrl),
+          processingRestore: asset.imageProcessingRestoreState?.dataUrl
+            ? { dataUrl: asset.imageProcessingRestoreState.dataUrl, scope: "image-processing" }
+            : asset.transparencyRestoreState?.dataUrl
+              ? { dataUrl: asset.transparencyRestoreState.dataUrl, scope: "transparency" }
+              : null
+        });
+      }
+
+      async function requestLocalLamaInpaint({ asset, sourceDataUrl, maskDataUrl, progressId, signal, maskExpand = 3, maskFeather = 2 }) {
+        const response = await fetchBackend("/api/local-image-processing/inpaint", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            assetId: asset.id,
+            dataUrl: sourceDataUrl,
+            maskDataUrl,
+            maskExpand,
+            maskFeather,
+            progressId
+          }),
+          signal
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !payload.dataUrl) {
+          throw new Error(payload.error || `本地 LaMa 修复失败：${response.status}`);
+        }
+        return payload;
+      }
+
       async function makeSliceAiTransparent(id) {
         const asset = getActiveSliceAsset(id);
         if (!asset || asset.aiProcessing) {
@@ -5321,15 +5329,15 @@
         const processingMessage = childRegions.length
           ? `正在清除 ${childRegions.length} 个子层并生成透明父层`
           : "正在请求 AI 生成透明 PNG";
-        setBusy(true, `${processingMessage}：${asset.name}`, true);
-        setSliceAiProcessing(asset, `${processingMessage} · 0s`, true);
         const progressId = createAiProgressId("transparent");
-        const controller = beginSliceAiRequest(asset, progressId);
-        const stopProgress = startAiProgressPolling(progressId, (progress) => updateSliceAiProgress(asset, progress, processingMessage));
+        const cleanupProgressId = `${progressId}_cleanup`;
+        const controller = beginSliceAiRequest(asset, childRegions.length ? cleanupProgressId : progressId);
+        setSliceAiProcessing(asset, `${processingMessage} · 0s`, true);
+        let stopProgress = startAiProgressPolling(childRegions.length ? cleanupProgressId : progressId, (progress) => updateSliceAiProgress(asset, progress, processingMessage));
         try {
           const restoreState = createSliceTransparencyRestoreState(asset);
           const sourceDataUrl = restoreState.dataUrl;
-          let transparentDataUrl;
+          let cutoutSourceDataUrl = sourceDataUrl;
           if (childRegions.length) {
             const maskDataUrl = createAiCompleteRegionsMaskDataUrl(asset.placement, childRegions);
             const blendMaskDataUrl = await createInnerFeatherMaskDataUrl(
@@ -5351,42 +5359,53 @@
                 width: Math.round(region.width),
                 height: Math.round(region.height)
               })),
-              progressId
+              progressId: cleanupProgressId
             });
-            setSliceAiProcessing(asset, "正在合成纯父层并移除边缘背景", true);
-            const cleanParentDataUrl = await compositeAiInpaintResult(
+            stopProgress();
+            setSliceAiProcessing(asset, "正在合成纯父层", true);
+            cutoutSourceDataUrl = await compositeAiInpaintResult(
               sourceDataUrl,
               image.dataUrl,
               blendMaskDataUrl
             );
-            transparentDataUrl = await removeEdgeBackground(cleanParentDataUrl);
-          } else {
-            const response = await fetchBackend("/api/assets/ai-redraw", {
-              method: "POST",
-              signal: controller.signal,
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                dataUrl: sourceDataUrl,
-                name: asset.name,
-                width: asset.placement.width,
-                height: asset.placement.height,
-                prompt: buildAiTransparentPrompt(asset),
-                progressId,
-                quality: "high"
-              })
-            });
-            const result = await response.json().catch(() => ({}));
-            if (!response.ok) {
-              throw new Error(result.error || `AI transparent request failed: ${response.status}`);
-            }
-            const image = result.images && result.images[0];
-            if (!image?.dataUrl) {
-              throw new Error("AI 透明没有返回图片");
-            }
-            transparentDataUrl = result.requiresLocalTransparency
-              ? await removeEdgeBackground(image.dataUrl)
-              : image.dataUrl;
+            controller.signal.throwIfAborted();
+            const request = sliceAiControllers.get(id);
+            if (request?.controller !== controller) return;
+            request.progressId = progressId;
+            stopProgress = startAiProgressPolling(progressId, (progress) => updateSliceAiProgress(asset, progress, "正在识别父层外轮廓"));
           }
+          setSliceAiProcessing(asset, "正在识别主体轮廓，保留原图高光与纹理", true);
+          const response = await fetchBackend("/api/assets/ai-redraw", {
+            method: "POST",
+            signal: controller.signal,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              dataUrl: cutoutSourceDataUrl,
+              operation: "remove-background",
+              contentType: asset.contentType,
+              compositeParent: childRegions.length > 0,
+              name: asset.name,
+              width: asset.placement.width,
+              height: asset.placement.height,
+              prompt: buildAiTransparentPrompt(asset),
+              progressId,
+              quality: "high"
+            })
+          });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(result.error || `AI transparent request failed: ${response.status}`);
+          }
+          const image = result.images && result.images[0];
+          if (!image?.dataUrl) {
+            throw new Error("AI 透明没有返回图片");
+          }
+          if (result.cutoutMethod !== "source-pixels-with-ai-mask") {
+            throw new Error("本地服务版本过旧，请重启 npm start 后重试 AI 透明");
+          }
+          controller.signal.throwIfAborted();
+          if (sliceAiControllers.get(id)?.controller !== controller) return;
+          const transparentDataUrl = image.dataUrl;
           recordSliceHistory();
           applySliceTransparencyResult(asset, {
             dataUrl: transparentDataUrl,
@@ -5414,10 +5433,8 @@
           }
         } finally {
           stopProgress();
-          finishSliceAiRequest(asset, controller);
           if (aiCompletePreview?.sliceId === id) aiCompletePreview = null;
-          setSliceAiProcessing(asset, "", false);
-          releaseBusyIfIdle();
+          finalizeSliceAiRequest(asset, controller);
         }
       }
 
@@ -5495,8 +5512,7 @@
           }
         } finally {
           stopProgress();
-          finishSliceAiRequest(asset, controller);
-          setSliceAiProcessing(asset, "", false);
+          finalizeSliceAiRequest(asset, controller);
         }
       }
 
@@ -5581,91 +5597,6 @@
         }
         sourceContext.putImageData(sourcePixels, 0, 0);
         return sourceCanvas.toDataURL("image/png");
-      }
-
-      async function convertSliceToSvg(id) {
-        const asset = getActiveSliceAsset(id);
-        if (!asset) {
-          return;
-        }
-        setBusy(true, `正在本地转换 SVG：${asset.name}`);
-        try {
-          const svgData = await rasterAssetToEditableSvg(asset.dataUrl, asset.placement.width, asset.placement.height);
-          recordSliceHistory();
-          applySliceSvgResult(asset, { svgData, ai: false });
-          activeSliceId = id;
-          refreshSliceVisibility();
-          renderCutModules(currentManifest);
-          scheduleWorkspaceDraftSave();
-        } catch (error) {
-          setStatus(`SVG 转换失败：${error.message || String(error)}`, "error");
-        } finally {
-          setBusy(false);
-        }
-      }
-
-      function restoreSliceSvg(asset) {
-        if (!asset) {
-          return;
-        }
-        recordSliceHistory();
-        restoreSliceSvgState(asset);
-        activeSliceId = asset.id;
-        refreshSliceVisibility();
-        renderCutModules(currentManifest);
-        scheduleWorkspaceDraftSave();
-      }
-
-      async function redrawSliceToSvg(id) {
-        const asset = getActiveSliceAsset(id);
-        if (!asset || asset.aiProcessing) {
-          return;
-        }
-        setBusy(true, `正在请求 AI 重绘 SVG：${asset.name}`, true);
-        setSliceAiProcessing(asset, "正在请求 AI 重绘 SVG · 0s", true);
-        const progressId = createAiProgressId("redraw_svg");
-        const controller = beginSliceAiRequest(asset, progressId);
-        const stopProgress = startAiProgressPolling(progressId, (progress) => updateSliceAiProgress(asset, progress, "正在请求 AI 重绘 SVG"));
-        try {
-          const response = await fetchBackend("/api/assets/redraw-svg", {
-            method: "POST",
-            signal: controller.signal,
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              dataUrl: asset.dataUrl,
-              name: asset.name,
-              width: asset.placement.width,
-              height: asset.placement.height,
-              prompt: buildAiRedrawPrompt(asset),
-              progressId
-            })
-          });
-          const result = await response.json().catch(() => ({}));
-          if (!response.ok) {
-            throw new Error(formatAiRedrawError(response.status, result.error));
-          }
-          if (!result.svg) {
-            throw new Error("AI 重绘没有返回 SVG");
-          }
-          setSliceAiProcessing(asset, "正在校验 SVG 结果", true);
-          const svgData = normalizeVectorSvg(result.svg, asset.placement.width, asset.placement.height);
-          recordSliceHistory();
-          applySliceSvgResult(asset, { svgData, ai: true });
-          activeSliceId = id;
-          refreshSliceVisibility();
-          renderCutModules(currentManifest);
-          scheduleWorkspaceDraftSave();
-          setStatus(`已生成 AI 重绘 SVG：${asset.name}。`, "success");
-        } catch (error) {
-          if (error?.name !== "AbortError") {
-            setStatus(`AI 重绘 SVG 失败：${error.message || String(error)}`, "error");
-          }
-        } finally {
-          stopProgress();
-          finishSliceAiRequest(asset, controller);
-          setSliceAiProcessing(asset, "", false);
-          releaseBusyIfIdle();
-        }
       }
 
       function createAiCompleteRegionsMaskDataUrl(placement, regions) {
@@ -5883,87 +5814,6 @@
         return canvas.toDataURL("image/png");
       }
 
-      async function rasterAssetToEditableSvg(dataUrl, fallbackWidth, fallbackHeight) {
-        const source = await loadImageElement(dataUrl);
-        const sourceWidth = source.naturalWidth || source.width || fallbackWidth;
-        const sourceHeight = source.naturalHeight || source.height || fallbackHeight;
-        const width = Math.max(1, Math.round(fallbackWidth || sourceWidth));
-        const height = Math.max(1, Math.round(fallbackHeight || sourceHeight));
-        const backendSvg = await vectorizeAssetWithBackend(dataUrl, width, height);
-        if (backendSvg) {
-          return backendSvg;
-        }
-
-        const tracer = window.ImageTracer;
-        if (!tracer || typeof tracer.imagedataToSVG !== "function") {
-          throw new Error("SVG 转换引擎未加载");
-        }
-
-        const maxSampleSize = 420;
-        const scale = Math.min(1, maxSampleSize / Math.max(sourceWidth, sourceHeight));
-        const sampleWidth = Math.max(1, Math.round(sourceWidth * scale));
-        const sampleHeight = Math.max(1, Math.round(sourceHeight * scale));
-        const canvas = document.createElement("canvas");
-        canvas.width = sampleWidth;
-        canvas.height = sampleHeight;
-        const context = canvas.getContext("2d", { willReadFrequently: true });
-        context.imageSmoothingEnabled = true;
-        context.imageSmoothingQuality = "high";
-        context.drawImage(source, 0, 0, sampleWidth, sampleHeight);
-        const imageData = context.getImageData(0, 0, sampleWidth, sampleHeight);
-        const traceScale = width / sampleWidth;
-        const svg = tracer.imagedataToSVG(imageData, {
-          ltres: 0.5,
-          qtres: 0.5,
-          pathomit: 8,
-          rightangleenhance: false,
-          colorsampling: 2,
-          numberofcolors: 18,
-          mincolorratio: 0.01,
-          colorquantcycles: 3,
-          layering: 0,
-          strokewidth: 0,
-          linefilter: true,
-          scale: traceScale,
-          roundcoords: 1,
-          viewbox: false,
-          desc: false,
-          blurradius: 0,
-          blurdelta: 20
-        });
-
-        const pathCount = (svg.match(/<path/g) || []).length;
-        if (!pathCount) {
-          throw new Error("没有检测到可转换的 SVG 路径");
-        }
-        if (pathCount > 700) {
-          throw new Error("路径过多，这个素材更适合保留 PNG");
-        }
-
-        return normalizeVectorSvg(svg, width, height);
-      }
-
-      async function vectorizeAssetWithBackend(dataUrl, width, height) {
-        try {
-          const response = await fetchBackend("/api/assets/vectorize", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ dataUrl, width, height })
-          });
-          const result = await response.json().catch(() => ({}));
-          if (!response.ok) {
-            throw new Error(result.error || `VTracer 转换失败：${response.status}`);
-          }
-          if (!result.svg) {
-            throw new Error("VTracer 没有返回 SVG");
-          }
-          return normalizeVectorSvg(result.svg, width, height);
-        } catch (error) {
-          console.warn("VTracer SVG conversion failed, falling back to ImageTracerJS.", error);
-          return null;
-        }
-      }
-
       async function buildPlacementManifest(manifest) {
         const activeImage = getActiveResultImage();
         ensureImageSliceState(activeImage);
@@ -5994,6 +5844,7 @@
           || uiBusy
           || workspaceOperationRunning
           || Boolean(backgroundDecompositionRequest)
+          || sliceAiControllers.size > 0
           || !getActiveResultImage()?.dataUrl;
         decomposeBackgroundButton.disabled = disabled;
       }
@@ -6017,6 +5868,10 @@
       }
 
       function canLeaveDuringAiDecomposition() {
+        if (sliceAiControllers.size > 0) {
+          setStatus(`仍有 ${sliceAiControllers.size} 个切图 AI 任务正在进行，请等待完成或先取消。`, "warning");
+          return false;
+        }
         if (!backgroundDecompositionRequest) return true;
         setStatus("正在进行 AI拆图，请先等待完成或取消。", "warning");
         return false;
@@ -8244,7 +8099,6 @@
           sidebar.classList.remove("has-result");
           previewZoomControls.hidden = true;
           resultGrid.innerHTML = '<div class="result-card"></div>';
-          resultCount.textContent = "";
           setImportActionsDisabled(true);
           renderEmptyCutModules();
           draftsPanel.classList.remove("open");
@@ -8305,7 +8159,6 @@
             sidebar.classList.remove("has-result");
             previewZoomControls.hidden = true;
             resultGrid.innerHTML = "";
-            resultCount.textContent = "";
             setImportActionsDisabled(true);
             renderEmptyCutModules();
           }

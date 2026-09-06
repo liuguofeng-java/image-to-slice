@@ -1,4 +1,5 @@
 const DEFAULT_UI_WINDOW = { width: 1280, height: 860 };
+const FULLSCREEN_UI_WINDOW = { width: 3200, height: 2200 };
 const MIN_UI_WINDOW = { width: 360, height: 240 };
 const COLLAPSED_UI_WINDOW = { width: 320, height: 72 };
 const UI_WINDOW_STORAGE_KEY = "ai-ui-window-state-v2";
@@ -71,6 +72,7 @@ function normalizeResizeSize(width, height, allowCollapsed) {
 
 module.exports = {
   DEFAULT_UI_WINDOW,
+  FULLSCREEN_UI_WINDOW,
   MIN_UI_WINDOW,
   COLLAPSED_UI_WINDOW,
   UI_WINDOW_STORAGE_KEY,

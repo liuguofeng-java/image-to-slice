@@ -6,6 +6,52 @@ const canvasViewportUtils = typeof require === "function"
       clampPreviewZoom
     };
 
+function calculateAnchoredCanvasScroll({
+  scrollLeft = 0,
+  scrollTop = 0,
+  anchorX = 0,
+  anchorY = 0,
+  previousZoom = 1,
+  nextZoom = 1,
+  previousLeft = 0,
+  previousTop = 0,
+  nextLeft = 0,
+  nextTop = 0
+}) {
+  const safePreviousZoom = Math.max(0.0001, Number(previousZoom) || 1);
+  const safeNextZoom = Math.max(0.0001, Number(nextZoom) || 1);
+  const resolvedAnchorX = Number(anchorX) || 0;
+  const resolvedAnchorY = Number(anchorY) || 0;
+  const sourceX = (
+    (Number(scrollLeft) || 0) + resolvedAnchorX - (Number(previousLeft) || 0)
+  ) / safePreviousZoom;
+  const sourceY = (
+    (Number(scrollTop) || 0) + resolvedAnchorY - (Number(previousTop) || 0)
+  ) / safePreviousZoom;
+  return {
+    left: Math.max(
+      0,
+      sourceX * safeNextZoom + (Number(nextLeft) || 0) - resolvedAnchorX
+    ),
+    top: Math.max(
+      0,
+      sourceY * safeNextZoom + (Number(nextTop) || 0) - resolvedAnchorY
+    )
+  };
+}
+
+function calculateWheelZoom(zoom, deltaY, deltaMode = 0, viewportHeight = 0) {
+  const currentZoom = Math.max(0.0001, Number(zoom) || 1);
+  const rawDelta = Number(deltaY) || 0;
+  const pixelDelta = deltaMode === 1
+    ? rawDelta * 16
+    : deltaMode === 2
+      ? rawDelta * Math.max(1, Number(viewportHeight) || 1)
+      : rawDelta;
+  const limitedDelta = Math.max(-160, Math.min(160, pixelDelta));
+  return currentZoom * Math.exp(-limitedDelta * 0.0016);
+}
+
 function createCanvasViewportController({
   viewport,
   controls = null,
@@ -25,6 +71,10 @@ function createCanvasViewportController({
   let mode = "fit";
   let lastView = null;
   let wheelTarget = null;
+  let panEventTarget = null;
+  let panState = null;
+  let panOffsetX = 0;
+  let panOffsetY = 0;
   let destroyed = false;
 
   function getSource() {
@@ -62,8 +112,8 @@ function createCanvasViewportController({
       mode,
       contentWidth,
       contentHeight,
-      left: placement.left,
-      top: placement.top
+      left: placement.left + panOffsetX,
+      top: placement.top + panOffsetY
     };
     render(lastView);
     updateControls();
@@ -76,23 +126,38 @@ function createCanvasViewportController({
     const previousView = lastView || renderCurrentView();
     const previousZoom = zoom;
     const nextZoom = canvasViewportUtils.clampPreviewZoom(value);
-    const sourceAnchor = anchor ? {
-      x: (viewport.scrollLeft + anchor.x - previousView.left) / previousZoom,
-      y: (viewport.scrollTop + anchor.y - previousView.top) / previousZoom
-    } : null;
+    if (Math.abs(nextZoom - previousZoom) < 0.0001) return;
+    const resolvedAnchor = anchor || {
+      x: viewport.clientWidth / 2,
+      y: viewport.clientHeight / 2
+    };
+    const previousScrollLeft = viewport.scrollLeft;
+    const previousScrollTop = viewport.scrollTop;
     zoom = nextZoom;
     mode = "manual";
     const nextView = renderCurrentView();
-    if (sourceAnchor) {
-      viewport.scrollLeft = Math.max(0, sourceAnchor.x * zoom + nextView.left - anchor.x);
-      viewport.scrollTop = Math.max(0, sourceAnchor.y * zoom + nextView.top - anchor.y);
-    }
+    const scroll = calculateAnchoredCanvasScroll({
+      scrollLeft: previousScrollLeft,
+      scrollTop: previousScrollTop,
+      anchorX: resolvedAnchor.x,
+      anchorY: resolvedAnchor.y,
+      previousZoom,
+      nextZoom,
+      previousLeft: previousView.left,
+      previousTop: previousView.top,
+      nextLeft: nextView.left,
+      nextTop: nextView.top
+    });
+    viewport.scrollLeft = scroll.left;
+    viewport.scrollTop = scroll.top;
   }
 
   function fit() {
     if (destroyed) return;
     const source = getSource();
     mode = "fit";
+    panOffsetX = 0;
+    panOffsetY = 0;
     zoom = canvasViewportUtils.calculatePreviewFitZoom(
       source.width,
       source.height,
@@ -115,26 +180,75 @@ function createCanvasViewportController({
 
   function handleWheel(event) {
     const forwarded = wheelTarget !== viewport;
-    if (!event.ctrlKey && !event.metaKey) {
-      if (!forwarded) return;
-      event.preventDefault();
-      viewport.scrollLeft += Number(event.deltaX) || 0;
-      viewport.scrollTop += Number(event.deltaY) || 0;
-      return;
-    }
     event.preventDefault();
     const rect = viewport.getBoundingClientRect();
-    const anchor = {
-      x: (Number(event.clientX) || rect.left + rect.width / 2) - rect.left,
-      y: (Number(event.clientY) || rect.top + rect.height / 2) - rect.top
+    const anchor = forwarded
+      ? { x: viewport.clientWidth / 2, y: viewport.clientHeight / 2 }
+      : {
+          x: (Number(event.clientX) || rect.left + rect.width / 2) - rect.left,
+          y: (Number(event.clientY) || rect.top + rect.height / 2) - rect.top
+        };
+    setZoom(
+      calculateWheelZoom(zoom, event.deltaY, event.deltaMode, viewport.clientHeight),
+      anchor
+    );
+  }
+
+  function finishPan() {
+    if (!panState) return;
+    panEventTarget?.removeEventListener("mousemove", handlePanMove, true);
+    panEventTarget?.removeEventListener("mouseup", handlePanEnd, true);
+    panEventTarget?.removeEventListener("blur", handlePanEnd, true);
+    viewport.classList.remove("canvas-panning");
+    panEventTarget = null;
+    panState = null;
+  }
+
+  function handlePanMove(event) {
+    if (!panState) return;
+    event.preventDefault();
+    panOffsetX = panState.offsetX + ((Number(event.clientX) || 0) - panState.x);
+    panOffsetY = panState.offsetY + ((Number(event.clientY) || 0) - panState.y);
+    mode = "manual";
+    renderCurrentView();
+  }
+
+  function handlePanEnd(event) {
+    if (event?.button != null && event.button !== 1) return;
+    event?.preventDefault?.();
+    finishPan();
+  }
+
+  function handlePanStart(event) {
+    if (event.button !== 1) return;
+    event.preventDefault();
+    finishPan();
+    panState = {
+      x: Number(event.clientX) || 0,
+      y: Number(event.clientY) || 0,
+      offsetX: panOffsetX,
+      offsetY: panOffsetY
     };
-    setZoom(zoom * Math.exp(-(Number(event.deltaY) || 0) * 0.01), anchor);
+    panEventTarget = wheelTarget || viewport.ownerDocument?.defaultView || window;
+    viewport.classList.add("canvas-panning");
+    panEventTarget.addEventListener("mousemove", handlePanMove, true);
+    panEventTarget.addEventListener("mouseup", handlePanEnd, true);
+    panEventTarget.addEventListener("blur", handlePanEnd, true);
+  }
+
+  function handleAuxClick(event) {
+    if (event.button === 1) event.preventDefault();
   }
 
   function bindWheelTarget(target = viewport) {
     wheelTarget?.removeEventListener("wheel", handleWheel);
+    wheelTarget?.removeEventListener("mousedown", handlePanStart);
+    wheelTarget?.removeEventListener("auxclick", handleAuxClick);
+    finishPan();
     wheelTarget = target || viewport;
     wheelTarget.addEventListener("wheel", handleWheel, { passive: false });
+    wheelTarget.addEventListener("mousedown", handlePanStart, { passive: false });
+    wheelTarget.addEventListener("auxclick", handleAuxClick, { passive: false });
   }
 
   function handleControlsClick(event) {
@@ -161,7 +275,10 @@ function createCanvasViewportController({
   function destroy() {
     if (destroyed) return;
     destroyed = true;
+    finishPan();
     wheelTarget?.removeEventListener("wheel", handleWheel);
+    wheelTarget?.removeEventListener("mousedown", handlePanStart);
+    wheelTarget?.removeEventListener("auxclick", handleAuxClick);
     controls?.removeEventListener("click", handleControlsClick);
     viewport.removeEventListener("keydown", handleKeydown);
     resizeObserver?.disconnect();
@@ -179,7 +296,7 @@ function createCanvasViewportController({
     bindWheelTarget,
     destroy,
     fit,
-    getState: () => ({ zoom, mode }),
+    getState: () => ({ zoom, mode, panX: panOffsetX, panY: panOffsetY }),
     refresh,
     setZoom
   };
@@ -187,6 +304,8 @@ function createCanvasViewportController({
 
 if (typeof module !== "undefined") {
   module.exports = {
+    calculateAnchoredCanvasScroll,
+    calculateWheelZoom,
     createCanvasViewportController
   };
 }

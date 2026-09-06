@@ -2,32 +2,6 @@ function createAiProgressId(prefix = "ai") {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
 }
 
-function formatAiRedrawError(status, message) {
-  if (status === 404) {
-    return "后端没有 AI 重绘 SVG 接口，请停止旧的 npm run api 后重新启动";
-  }
-  return message || `AI 重绘接口失败：${status}`;
-}
-
-function buildAiRedrawPrompt(asset) {
-  const width = asset?.placement?.width || 512;
-  const height = asset?.placement?.height || 512;
-  return [
-    `Vectorize this sliced UI icon asset as an editable SVG named "${asset?.name || "ui_asset"}".`,
-    "Use the attached PNG as the only source of truth. The result should look carefully traced and vectorized, not redesigned.",
-    "Core principles: 1:1 similarity first, faithful restoration first, no redesign, no style change, no key-structure simplification, no added elements, no generic replacement icon.",
-    "Silently analyze the icon type, main contour blocks, subject position, scale, padding, direction, tilt, visual weight, asymmetry, internal highlights, shadows, facets, cutouts, lines, decoration, layer order, and color relationships.",
-    "The outer silhouette is mandatory and must closely match the source. Preserve rounded corners, sharp corners, concave/convex areas, notches, tilt, asymmetry, and special curves.",
-    "For abstract icons and symbols, prioritize geometric contour accuracy over illustration style. Do not round, blobify, inflate, smooth, or regularize the shape unless the source does.",
-    "Keep only details actually present in the source. Preserve highlight and gradient placement, internal white/negative shapes, shadow strength, detail size, angle, and layer order.",
-    "Clean only screenshot noise, blur, compression artifacts, background contamination, and neighboring UI fragments.",
-    "Match source colors, gradient direction, opacity, highlights, and dark areas. If the source is flat color, keep it flat.",
-    "Use editable path/circle/rect/ellipse/polygon/line/g/defs/linearGradient/radialGradient/mask/clipPath elements. Prefer Bezier paths for main contours.",
-    "Do not embed raster images, base64, external href, HTML, foreignObject, CSS imports, script, or animation.",
-    `Return raw SVG only. Transparent background. Use viewBox: 0 0 ${width} ${height}. Preserve the original crop padding and do not arbitrarily fill the canvas.`
-  ].join("\n");
-}
-
 function buildAiTransparentPrompt() {
   return [
     "Use the attached image as the only source of truth.",
@@ -104,11 +78,9 @@ function buildBackgroundRestorePrompt(background) {
 if (typeof module !== "undefined") {
   module.exports = {
     buildAiCompletePrompt,
-    buildAiRedrawPrompt,
     buildAiTransparentPrompt,
     buildCompositeParentCleanupPrompt,
     buildBackgroundRestorePrompt,
-    createAiProgressId,
-    formatAiRedrawError
+    createAiProgressId
   };
 }

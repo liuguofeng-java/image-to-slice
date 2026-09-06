@@ -28,6 +28,24 @@ function buildSliceExportManifest({
       ...(isText ? { text: { ...(asset.text || {}) } } : {}),
       transparent: Boolean(asset.transparent),
       aiTransparent: Boolean(asset.aiTransparent),
+      ...(asset.cutoutMethod ? {
+        cutoutMethod: asset.cutoutMethod,
+        cutoutMaskDataUrl: asset.cutoutMaskDataUrl || null,
+        cutoutSettings: asset.cutoutSettings ? { ...asset.cutoutSettings } : null,
+        cutoutSessionSourceSignature: asset.cutoutSessionSourceSignature || ""
+      } : {}),
+      ...(asset.localInpaintMethod ? {
+        localInpaintMethod: asset.localInpaintMethod,
+        localInpaintSourceSignature: asset.localInpaintSourceSignature || ""
+      } : {}),
+      ...(asset.upscaleMethod ? {
+        upscaleMethod: asset.upscaleMethod,
+        upscaleScale: Number(asset.upscaleScale) || 2,
+        sourcePixelWidth: Number(asset.sourcePixelWidth) || null,
+        sourcePixelHeight: Number(asset.sourcePixelHeight) || null,
+        outputPixelWidth: Number(asset.outputPixelWidth) || null,
+        outputPixelHeight: Number(asset.outputPixelHeight) || null
+      } : {}),
       aiRedrawn: Boolean(asset.aiRedrawn),
       hasOriginalRaster: Boolean(asset.originalDataUrl),
       selectedImageIndex: imageIndex,
