@@ -6,6 +6,8 @@
     "start": "node scripts/start-local.js",
     "dev": "node scripts/start-local.js",
     "api": "node server.js",
+    "local-models:setup": "node scripts/setup-local-models.js",
+    "local-models:check": "node scripts/check-local-models.js",
     "sam2:check": "node scripts/check-sam2.js",
     "local-ai:check": "node scripts/check-local-ai.js",
     "build": "npm run typecheck && npm run build:ui && npm run build:plugin-main && npm run build:figma-sim",

@@ -2,6 +2,7 @@ const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const readline = require("node:readline");
+const { resolvePythonRuntime } = require("./local-python-runtime");
 
 function serviceError(message, statusCode = 503) {
   const error = new Error(message);
@@ -11,10 +12,12 @@ function serviceError(message, statusCode = 503) {
 
 function resolveSam2Options(projectRoot, environment = process.env) {
   const sam2Root = path.resolve(environment.SAM2_ROOT || path.join(projectRoot, "..", "sam2-main"));
-  const python = environment.SAM2_PYTHON || (process.platform === "win32" ? "py" : "python3");
-  const pythonArgs = environment.SAM2_PYTHON
-    ? []
-    : (process.platform === "win32" ? ["-3.11"] : []);
+  const { python, pythonArgs } = resolvePythonRuntime({
+    projectRoot,
+    environment,
+    overrideKey: "SAM2_PYTHON",
+    virtualEnvironment: ".venv-sam2"
+  });
   return {
     sam2Root,
     python,

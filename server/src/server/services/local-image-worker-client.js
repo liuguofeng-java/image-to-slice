@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline");
+const { resolvePythonRuntime } = require("./local-python-runtime");
 
 function serviceError(message, statusCode = 503) {
   const error = new Error(message);
@@ -20,8 +21,12 @@ function abortError(message = "本地图像处理已取消") {
 function resolveLocalImageOptions(projectRoot, environment = process.env) {
   const iopaintRoot = path.resolve(environment.IOPAINT_ROOT || path.join(projectRoot, "..", "IOPaint"));
   const realesrganRoot = path.resolve(environment.REALESRGAN_ROOT || path.join(projectRoot, "..", "Real-ESRGAN"));
-  const python = environment.LOCAL_IMAGE_PYTHON || (process.platform === "win32" ? "py" : "python3");
-  const pythonArgs = environment.LOCAL_IMAGE_PYTHON ? [] : (process.platform === "win32" ? ["-3.11"] : []);
+  const { python, pythonArgs } = resolvePythonRuntime({
+    projectRoot,
+    environment,
+    overrideKey: "LOCAL_IMAGE_PYTHON",
+    virtualEnvironment: ".venv-local-image"
+  });
   const defaultCacheRoot = environment.USERPROFILE
     ? path.join(environment.USERPROFILE, ".cache", "torch", "hub", "checkpoints")
     : path.join(os.homedir(), ".cache", "torch", "hub", "checkpoints");

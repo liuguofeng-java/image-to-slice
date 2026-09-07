@@ -38,6 +38,20 @@ test("local image environment variables override every external path", () => {
   assert.equal(options.lamaModelPath, path.resolve("D:/models/lama.pt"));
 });
 
+test("local image worker automatically uses the adjacent virtual environment", (context) => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "image-to-slice-local-python-"));
+  context.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+  const projectRoot = path.join(parent, "server");
+  const python = process.platform === "win32"
+    ? path.join(parent, ".venv-local-image", "Scripts", "python.exe")
+    : path.join(parent, ".venv-local-image", "bin", "python");
+  fs.mkdirSync(path.dirname(python), { recursive: true });
+  fs.writeFileSync(python, "fixture");
+  const options = resolveLocalImageOptions(projectRoot, { USERPROFILE: "C:/Users/demo" });
+  assert.equal(options.python, python);
+  assert.deepEqual(options.pythonArgs, []);
+});
+
 test("data URL validation rejects non-image payloads", () => {
   assert.equal(decodeDataUrl("data:image/png;base64,YQ==", "源图").toString(), "a");
   assert.throws(() => decodeDataUrl("https://example.com/a.png", "源图"), /base64/);
