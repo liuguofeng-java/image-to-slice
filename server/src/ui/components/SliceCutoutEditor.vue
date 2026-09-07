@@ -7,9 +7,7 @@ import {
   createLabPixels,
   createWandMask,
   fillMaskHoles,
-  invertMask,
-  packMask,
-  unpackMask
+  invertMask
 } from '../services/cutout-mask';
 import type {
   CutoutCombineMode,
@@ -32,6 +30,9 @@ const props = defineProps<{
 const emit = defineEmits<{ close: [] }>();
 
 interface EditorCheckpoint {
+  mode: CutoutEditorMode;
+  cutoutDraft: Uint8Array;
+  repairDraft: Uint8Array;
   source: ImageData;
   selection: Uint8Array;
   settings: CutoutSettings;
@@ -56,7 +57,7 @@ const tool = ref<CutoutTool>('smart');
 const combine = ref<CutoutCombineMode>('replace');
 const previewBackground = ref<CutoutPreviewBackground>('checker');
 const zoom = ref(1);
-const status = ref('点击主体开始智能选择；Alt+单击添加背景排除点。');
+const status = ref('');
 const error = ref('');
 const samBusy = ref(false);
 const samAvailable = ref(false);
@@ -68,7 +69,6 @@ const snapshot = ref<CutoutEditorSnapshot>();
 const history = ref<EditorCheckpoint[]>([]);
 const future = ref<EditorCheckpoint[]>([]);
 const operations = ref<ImageEditorOperation[]>([]);
-const openingCheckpoint = ref<EditorCheckpoint>();
 const maskRevision = ref(0);
 const mode = ref<CutoutEditorMode>('cutout');
 const localBusy = ref(false);
@@ -79,6 +79,25 @@ const upscaleScale = ref<2 | 4>(2);
 const compareOriginal = ref(false);
 const originalImage = ref<HTMLImageElement>();
 const saving = ref(false);
+const previewResult = ref(false);
+const panelOpen = ref(false);
+const pendingRepairSave = ref(false);
+const cutoutDraft = ref(new Uint8Array());
+const repairDraft = ref(new Uint8Array());
+const spaceHeld = ref(false);
+const zoomStrategy = ref<'initial' | 'fit' | 'manual'>('initial');
+const busy = computed(() => localBusy.value || samBusy.value || saving.value);
+const isBrush = computed(() => tool.value === 'brush-add' || tool.value === 'brush-subtract');
+const hasRepairDraft = computed(() => mode.value === 'repair' ? hasSelection.value : repairDraft.value.some(Boolean));
+const toolHint = computed(() => mode.value === 'upscale' ? '提高图片像素，设计尺寸保持不变。'
+  : tool.value === 'wand' ? '点击颜色区域；Shift 添加，Alt 减去。'
+  : isBrush.value ? (mode.value === 'repair' ? '涂红需要移除的内容，擦除误选区域。' : '涂抹保留主体，擦除多余选区。')
+  : tool.value === 'rect' ? '拖动框选需要移除的内容；Shift 添加，Alt 减去。'
+  : '点击保留主体，添加排除点修正背景。');
+let edgeBefore: EditorCheckpoint | undefined;
+let resizeObserver: ResizeObserver | undefined;
+let previousFocus: HTMLElement | null = null;
+let editorGeneration = 0;
 let drawing = false;
 let drawingAdds = true;
 let lastPoint: { x: number; y: number } | null = null;
@@ -87,8 +106,6 @@ let rectangleStart: { x: number; y: number } | null = null;
 let rectangleBase: Uint8Array | null = null;
 let march = 0;
 let marchTimer: ReturnType<typeof setInterval> | undefined;
-let initializing = false;
-let restoringCheckpoint = false;
 let nextStateId = 1;
 let currentStateId = 0;
 
@@ -111,7 +128,7 @@ const stageStyle = computed(() => ({
 }));
 const canUndo = computed(() => history.value.length > 0);
 const canRedo = computed(() => future.value.length > 0);
-const canSave = computed(() => dirty.value && operations.value.length > 0
+const canSave = computed(() => (operations.value.length > 0 || (mode.value === 'cutout' && hasSelection.value))
   && !localBusy.value && !samBusy.value && !saving.value);
 const hasSelection = computed(() => {
   maskRevision.value;
@@ -187,18 +204,20 @@ function maskToDataUrl(mask: Uint8Array) {
 }
 
 function effectiveSelection() {
-  if (!settings.fillHoles) return selection.value;
+  if (mode.value !== 'cutout' || !settings.fillHoles) return selection.value;
   return fillMaskHoles(selection.value, dimensions.value.width, dimensions.value.height);
 }
 
-function render() {
+function render(overlayOnly = false) {
   if (!source.value || !baseCanvas.value || !resultCanvas.value || !overlayCanvas.value) return;
   const { width, height } = dimensions.value;
   for (const canvas of [baseCanvas.value, resultCanvas.value, overlayCanvas.value]) {
-    canvas.width = width; canvas.height = height;
+    if (canvas.width !== width) canvas.width = width;
+    if (canvas.height !== height) canvas.height = height;
   }
+  if (!overlayOnly) {
   baseCanvas.value.getContext('2d')?.putImageData(source.value, 0, 0);
-  const result = mode.value === 'cutout' && hasSelection.value
+  const result = mode.value === 'cutout' && hasSelection.value && previewResult.value
     ? applyAlphaMatte(
         source.value,
         createAlphaMatte(selection.value, width, height, settings),
@@ -214,13 +233,14 @@ function render() {
   } else {
     resultContext?.putImageData(result, 0, 0);
   }
+  }
   const context = overlayCanvas.value.getContext('2d');
   if (!context) return;
   const output = context.createImageData(width, height);
   const mask = effectiveSelection();
   for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
     const index = y * width + x;
-    if (!compareOriginal.value && mode.value !== 'upscale' && (mask[index] ?? 0) > 0) {
+    if (!compareOriginal.value && !previewResult.value && mode.value !== 'upscale' && (mask[index] ?? 0) > 0) {
       const offset = index * 4;
       if (mode.value === 'repair') {
         output.data[offset] = 239; output.data[offset + 1] = 68; output.data[offset + 2] = 68;
@@ -249,8 +269,9 @@ function currentSourceDataUrl() {
   return canvas.toDataURL('image/png');
 }
 
-async function replaceWorkingImage(dataUrl: string) {
+async function replaceWorkingImage(dataUrl: string, isCurrent: () => boolean = () => true) {
   const element = await loadHtmlImage(dataUrl);
+  if (!isCurrent()) return false;
   image.value = element;
   const canvas = document.createElement('canvas');
   canvas.width = element.naturalWidth; canvas.height = element.naturalHeight;
@@ -260,6 +281,7 @@ async function replaceWorkingImage(dataUrl: string) {
   source.value = context.getImageData(0, 0, canvas.width, canvas.height);
   labs.value = createLabPixels(source.value);
   selection.value = new Uint8Array(canvas.width * canvas.height);
+  cutoutDraft.value = new Uint8Array(); repairDraft.value = new Uint8Array();
   maskRevision.value++;
   const previousSessionId = sessionId.value;
   requestRevision.value++;
@@ -268,7 +290,8 @@ async function replaceWorkingImage(dataUrl: string) {
   candidateMasks.value = [];
   points.value = [];
   if (previousSessionId) void props.backend.closeSession(previousSessionId).catch(() => {});
-  await nextTick(); fit(); render();
+  await nextTick(); refreshFit(); render();
+  return true;
 }
 
 function cloneOperation(operation: ImageEditorOperation): ImageEditorOperation {
@@ -281,8 +304,11 @@ function cloneOperation(operation: ImageEditorOperation): ImageEditorOperation {
 function captureCheckpoint(): EditorCheckpoint | undefined {
   if (!source.value) return undefined;
   return {
+    mode: mode.value,
+    cutoutDraft: new Uint8Array(mode.value === 'cutout' ? selection.value : cutoutDraft.value),
+    repairDraft: new Uint8Array(mode.value === 'repair' ? selection.value : repairDraft.value),
     source: source.value,
-    selection: packMask(selection.value),
+    selection: new Uint8Array(selection.value),
     settings: { ...settings },
     operations: operations.value.map(cloneOperation),
     stateId: currentStateId
@@ -290,20 +316,24 @@ function captureCheckpoint(): EditorCheckpoint | undefined {
 }
 
 async function restoreCheckpoint(checkpoint: EditorCheckpoint) {
-  restoringCheckpoint = true;
+  invalidateSam();
+  mode.value = checkpoint.mode;
+  tool.value = mode.value === 'cutout' ? (samAvailable.value ? 'smart' : 'wand') : mode.value === 'repair' ? 'rect' : 'pan';
+  cutoutDraft.value = new Uint8Array(checkpoint.cutoutDraft);
+  repairDraft.value = new Uint8Array(checkpoint.repairDraft);
   source.value = checkpoint.source;
   labs.value = createLabPixels(checkpoint.source);
-  selection.value = unpackMask(checkpoint.selection, checkpoint.source.width * checkpoint.source.height);
+  selection.value = new Uint8Array(checkpoint.selection);
   operations.value = checkpoint.operations.map(cloneOperation);
   Object.assign(settings, checkpoint.settings);
   currentStateId = checkpoint.stateId;
   dirty.value = currentStateId !== 0;
   maskRevision.value++;
   compareOriginal.value = false;
+  previewResult.value = false;
   await nextTick();
-  fit();
+  refreshFit();
   render();
-  restoringCheckpoint = false;
 }
 
 function markChanged() {
@@ -316,7 +346,7 @@ function createProgressId(prefix: string) {
 }
 
 async function runLocalRepair() {
-  if (!snapshot.value || !source.value || !hasSelection.value || localBusy.value) return;
+  if (!snapshot.value || !source.value || !hasSelection.value || busy.value || !localAvailable.value) return;
   const assetId = snapshot.value.assetId;
   const sourceDataUrl = currentSourceDataUrl();
   const repairMaskDataUrl = maskToDataUrl(effectiveSelection());
@@ -337,7 +367,7 @@ async function runLocalRepair() {
     });
     if (snapshot.value?.assetId !== assetId || localProgressId.value !== progressId) return;
     const resultDataUrl = String(result.dataUrl || '');
-    await replaceWorkingImage(resultDataUrl);
+    if (!await replaceWorkingImage(resultDataUrl, () => visible.value && localProgressId.value === progressId)) return;
     if (before) pushHistory(before);
     operations.value = [...operations.value, {
       kind: 'inpaint',
@@ -362,7 +392,7 @@ async function runLocalRepair() {
 }
 
 async function runUpscale() {
-  if (!snapshot.value || !source.value || localBusy.value) return;
+  if (!snapshot.value || !source.value || busy.value || !localAvailable.value) return;
   const assetId = snapshot.value.assetId;
   const sourceDataUrl = currentSourceDataUrl();
   const progressId = createProgressId('local_upscale');
@@ -380,7 +410,7 @@ async function runUpscale() {
     });
     if (snapshot.value?.assetId !== assetId || localProgressId.value !== progressId) return;
     const resultDataUrl = String(result.dataUrl || '');
-    await replaceWorkingImage(resultDataUrl);
+    if (!await replaceWorkingImage(resultDataUrl, () => visible.value && localProgressId.value === progressId)) return;
     if (before) pushHistory(before);
     operations.value = [...operations.value, {
       kind: 'upscale',
@@ -409,21 +439,56 @@ async function runUpscale() {
 
 async function cancelLocalTask() {
   if (!localProgressId.value) return;
-  await props.backend.cancel(localProgressId.value).catch(() => {});
-  status.value = '已请求取消本地图像处理。';
+  const id = localProgressId.value;
+  localProgressId.value = ''; localBusy.value = false;
+  status.value = '已取消处理，当前编辑结果已保留。';
+  await props.backend.cancel(id).catch(() => {});
 }
 
-function fit() {
+function fit(limit = 8) {
   if (!viewport.value || !source.value) return;
-  zoom.value = Math.min(8, Math.max(0.05,
+  zoom.value = Math.min(limit, Math.max(0.05,
     Math.min((viewport.value.clientWidth - 48) / source.value.width, (viewport.value.clientHeight - 48) / source.value.height)));
+}
+function refreshFit() { if (zoomStrategy.value !== 'manual') fit(zoomStrategy.value === 'initial' ? 2 : 8); }
+function fitWindow() { zoomStrategy.value = 'fit'; fit(); }
+function setZoom(value: number) { zoomStrategy.value = 'manual'; zoom.value = Math.max(.05, Math.min(16, value)); }
+
+function invalidateSam() {
+  requestRevision.value++;
+  const id = sessionId.value; sessionId.value = ''; samBusy.value = false;
+  candidates.value = []; candidateMasks.value = []; points.value = [];
+  if (id) void props.backend.closeSession(id).catch(() => {});
+}
+
+async function changeMode(next: CutoutEditorMode) {
+  if (next === mode.value || busy.value) return;
+  if (mode.value === 'cutout' && hasSelection.value) await applyCutoutToWorkingImage();
+  if (mode.value === 'cutout') cutoutDraft.value = new Uint8Array(selection.value);
+  if (mode.value === 'repair') repairDraft.value = new Uint8Array(selection.value);
+  mode.value = next;
+  const draft = next === 'cutout' ? cutoutDraft.value : next === 'repair' ? repairDraft.value : new Uint8Array();
+  selection.value = draft.length === dimensions.value.width * dimensions.value.height
+    ? new Uint8Array(draft) : new Uint8Array(dimensions.value.width * dimensions.value.height);
+  maskRevision.value++;
+  compareOriginal.value = false; previewResult.value = false;
+  tool.value = next === 'cutout' ? (samAvailable.value ? 'smart' : 'wand') : next === 'repair' ? 'rect' : 'pan';
+  error.value = next === 'cutout' ? '' : localModeError();
+  status.value = ''; render();
+}
+
+function beginEdgeChange() { if (!edgeBefore) edgeBefore = captureCheckpoint(); }
+function endEdgeChange() {
+  if (edgeBefore && JSON.stringify(edgeBefore.settings) !== JSON.stringify(settings)
+    && hasSelection.value) { pushHistory(edgeBefore); markChanged(); }
+  edgeBefore = undefined;
 }
 
 function pushHistory(checkpoint = captureCheckpoint()) {
   if (!checkpoint) return;
-  const packedBytes = checkpoint.selection.byteLength;
+  const packedBytes = checkpoint.source.data.byteLength + checkpoint.selection.byteLength + checkpoint.cutoutDraft.byteLength + checkpoint.repairDraft.byteLength;
   const maxItems = Math.max(1, Math.min(20, Math.floor((32 * 1024 * 1024) / Math.max(1, packedBytes))));
-  history.value = [...history.value.slice(-(maxItems - 1)), checkpoint];
+  history.value = [...(maxItems > 1 ? history.value.slice(-(maxItems - 1)) : []), checkpoint];
   future.value = [];
 }
 
@@ -503,6 +568,7 @@ function paintSegment(from: { x: number; y: number } | null, to: { x: number; y:
 
 async function runSmartSelection(point: { x: number; y: number }, label: 'foreground' | 'background') {
   if (!samAvailable.value || samBusy.value || !snapshot.value) return;
+  const generation = editorGeneration;
   if (!sessionId.value) {
     samBusy.value = true; status.value = '正在加载图片特征…'; error.value = '';
     try {
@@ -512,9 +578,13 @@ async function runSmartSelection(point: { x: number; y: number }, label: 'foregr
         width: dimensions.value.width,
         height: dimensions.value.height
       });
+      if (!visible.value || generation !== editorGeneration) {
+        void props.backend.closeSession(String(session.sessionId)).catch(() => {}); return;
+      }
       sessionId.value = String(session.sessionId);
       status.value = `特征计算完成（${session.embeddingMs}ms）`;
     } catch (failure: any) {
+      if (generation !== editorGeneration || !visible.value) return;
       error.value = failure.message || String(failure); samAvailable.value = false; samBusy.value = false; return;
     }
     samBusy.value = false;
@@ -562,30 +632,36 @@ async function runSmartSelection(point: { x: number; y: number }, label: 'foregr
     status.value = `分割完成（${response.inferenceMs}ms），可切换候选或继续添加提示点。`;
     render();
   } catch (failure: any) {
-    error.value = failure.message || String(failure);
+    if (revision === requestRevision.value) error.value = failure.message || String(failure);
   } finally {
     if (revision === requestRevision.value) samBusy.value = false;
   }
 }
 
 function selectCandidate(index: number) {
+  if (busy.value) return;
   const mask = candidateMasks.value[index];
   if (!mask) return;
   pushHistory(); selectedCandidate.value = index; selection.value = new Uint8Array(mask); maskRevision.value++; markChanged(); render();
 }
 
 function removePoint(index: number) {
+  if (busy.value) return;
   points.value = points.value.filter((_, current) => current !== index);
   candidates.value = []; candidateMasks.value = [];
   status.value = '提示点已修改，请再次点击主体继续智能选择。';
 }
 
 async function pointerDown(event: PointerEvent) {
-  if (!source.value || event.button !== 0 || localBusy.value || compareOriginal.value || mode.value === 'upscale') return;
-  const point = canvasPoint(event);
-  if (tool.value === 'pan') {
+  if (!source.value || event.button !== 0) return;
+  if (tool.value === 'pan' || spaceHeld.value || compareOriginal.value || mode.value === 'upscale' || previewResult.value) {
     panning = { x: event.clientX, y: event.clientY, left: viewport.value!.scrollLeft, top: viewport.value!.scrollTop };
-  } else if (tool.value === 'smart' || tool.value === 'smart-background') {
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId); return;
+  }
+  if (busy.value || pendingRepairSave.value || showUnsaved.value) return;
+  if (event.target === viewport.value) return;
+  const point = canvasPoint(event);
+  if (tool.value === 'smart' || tool.value === 'smart-background') {
     await runSmartSelection(point, event.altKey || tool.value === 'smart-background' ? 'background' : 'foreground');
     return;
   } else if (tool.value === 'wand' && source.value && labs.value) {
@@ -639,8 +715,8 @@ function pointerMove(event: PointerEvent) {
 
 function pointerUp() { drawing = false; lastPoint = null; panning = null; rectangleStart = null; rectangleBase = null; }
 
-function invert() { pushHistory(); selection.value = invertMask(selection.value); maskRevision.value++; markChanged(); render(); }
-function clearSelection() { pushHistory(); selection.value = new Uint8Array(selection.value.length); maskRevision.value++; markChanged(); render(); }
+function invert() { if (busy.value || mode.value === 'upscale') return; pushHistory(); selection.value = invertMask(selection.value); maskRevision.value++; markChanged(); render(); }
+function clearSelection() { if (busy.value) return; pushHistory(); selection.value = new Uint8Array(selection.value.length); invalidateSam(); maskRevision.value++; markChanged(); render(); }
 
 async function applyCutoutToWorkingImage() {
   if (!snapshot.value || !source.value || !hasSelection.value || samBusy.value || localBusy.value) return;
@@ -660,6 +736,8 @@ async function applyCutoutToWorkingImage() {
   source.value = result;
   labs.value = createLabPixels(result);
   selection.value = new Uint8Array(width * height);
+  cutoutDraft.value = new Uint8Array(); repairDraft.value = new Uint8Array();
+  invalidateSam();
   maskRevision.value++;
   const dataUrl = currentSourceDataUrl();
   operations.value = [...operations.value, {
@@ -675,30 +753,15 @@ async function applyCutoutToWorkingImage() {
   render();
 }
 
-async function resetSession() {
-  if (!openingCheckpoint.value || localBusy.value || samBusy.value || saving.value) return;
-  const current = captureCheckpoint();
-  if (!current || current.stateId === openingCheckpoint.value.stateId) return;
-  pushHistory(current);
-  await restoreCheckpoint(openingCheckpoint.value);
-  markChanged();
-  status.value = '已重置到本次打开编辑器时的状态，可撤销恢复。';
-}
-
-async function restoreProcessedImage() {
-  const restore = snapshot.value?.processingRestore;
-  if (!restore || localBusy.value || samBusy.value || saving.value) return;
-  const before = captureCheckpoint();
-  if (!before) return;
-  await replaceWorkingImage(restore.dataUrl);
-  pushHistory(before);
-  operations.value = [...operations.value, { kind: 'restore', dataUrl: restore.dataUrl, scope: restore.scope }];
-  markChanged();
-  status.value = '已恢复处理前图片，点击保存后正式应用。';
-}
-
-async function save() {
+async function save(discardRepair = false) {
   if (!snapshot.value || !source.value || !canSave.value) return;
+  if (hasRepairDraft.value && !discardRepair) { pendingRepairSave.value = true; return; }
+  pendingRepairSave.value = false;
+  if (discardRepair) {
+    repairDraft.value = new Uint8Array();
+    if (mode.value === 'repair') { selection.value = new Uint8Array(selection.value.length); maskRevision.value++; render(); }
+  }
+  if (mode.value === 'cutout' && hasSelection.value) await applyCutoutToWorkingImage();
   const lastCutout = [...operations.value].reverse().find(operation => operation.kind === 'cutout');
   saving.value = true;
   error.value = '';
@@ -724,12 +787,15 @@ async function save() {
 }
 
 async function closeNow() {
-  requestRevision.value++;
-  if (localProgressId.value) await props.backend.cancel(localProgressId.value).catch(() => {});
-  if (sessionId.value) await props.backend.closeSession(sessionId.value).catch(() => {});
+  editorGeneration++;
+  const progressId = localProgressId.value;
+  invalidateSam();
+  if (progressId) void props.backend.cancel(progressId).catch(() => {});
   sessionId.value = ''; visible.value = false; showUnsaved.value = false;
   localBusy.value = false;
   localProgressId.value = '';
+  pendingRepairSave.value = false; spaceHeld.value = false; pointerUp();
+  resizeObserver?.disconnect(); previousFocus?.focus();
   emit('close');
 }
 
@@ -740,36 +806,50 @@ function requestClose() {
 }
 
 function keydown(event: KeyboardEvent) {
+  if (event.key === 'Tab' && dialog.value) {
+    const scope = dialog.value.querySelector('.cutout-unsaved') || dialog.value;
+    const elements = Array.from(scope.querySelectorAll<HTMLElement>('button:not(:disabled), select:not(:disabled), input:not(:disabled), summary, [tabindex="0"]')).filter(item => item.getClientRects().length);
+    const first = elements[0], last = elements.at(-1);
+    if (event.shiftKey && (document.activeElement === first || !scope.contains(document.activeElement))) { event.preventDefault(); last?.focus(); }
+    else if (!event.shiftKey && (document.activeElement === last || !scope.contains(document.activeElement))) { event.preventDefault(); first?.focus(); }
+    return;
+  }
+  if (event.key === 'Escape') {
+    event.preventDefault(); spaceHeld.value = false; pointerUp();
+    if (pendingRepairSave.value) pendingRepairSave.value = false;
+    else if (showUnsaved.value) showUnsaved.value = false;
+    else if (panelOpen.value) panelOpen.value = false;
+    else requestClose();
+    return;
+  }
+  if (pendingRepairSave.value || showUnsaved.value) return;
   const target = event.target as HTMLElement;
   if (target.matches('input, select, textarea')) return;
+  if (event.code === 'Space') { event.preventDefault(); spaceHeld.value = true; return; }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); void save(); return; }
   if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'i') { event.preventDefault(); invert(); return; }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') { event.preventDefault(); event.shiftKey ? redo() : undo(); return; }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y') { event.preventDefault(); redo(); return; }
-  const keys: Record<string, CutoutTool> = { w: 'wand', s: mode.value === 'cutout' ? 'smart' : 'rect', r: 'rect', b: 'brush-add', e: 'brush-subtract' };
+  if (busy.value || mode.value === 'upscale') return;
+  const keys: Record<string, CutoutTool> = { w: 'wand', s: mode.value === 'cutout' ? (samAvailable.value ? 'smart' : 'wand') : 'rect', r: mode.value === 'repair' ? 'rect' : 'wand', b: 'brush-add', e: 'brush-subtract' };
   const nextTool = keys[event.key.toLowerCase()];
-  if (nextTool) tool.value = nextTool;
+  if (nextTool) { tool.value = nextTool; previewResult.value = false; }
   else if (event.key === '[') settings.brushSize = Math.max(1, settings.brushSize - 2);
   else if (event.key === ']') settings.brushSize = Math.min(200, settings.brushSize + 2);
-  else if (event.key === 'Escape') {
-    drawing = false; lastPoint = null; panning = null; rectangleStart = null; rectangleBase = null; showUnsaved.value = false;
-    status.value = '已取消当前动作。';
-  }
 }
 
 async function open(next: CutoutEditorSnapshot) {
-  initializing = true;
+  previousFocus = document.activeElement as HTMLElement;
+  const generation = ++editorGeneration;
   snapshot.value = next; visible.value = true; dirty.value = false; showUnsaved.value = false;
-  mode.value = 'cutout';
-  tool.value = 'smart';
+  mode.value = next.openMode || 'cutout';
+  tool.value = mode.value === 'cutout' ? 'smart' : mode.value === 'repair' ? 'rect' : 'pan';
+  zoomStrategy.value = 'initial'; previewResult.value = false; panelOpen.value = false;
+  pendingRepairSave.value = false; localBusy.value = false; samBusy.value = false; samAvailable.value = false;
+  cutoutDraft.value = new Uint8Array(); repairDraft.value = new Uint8Array();
   error.value = '';
-  status.value = mode.value === 'cutout'
-    ? '点击主体开始智能选择；Alt+单击添加背景排除点。'
-    : mode.value === 'repair'
-      ? '框选或涂抹需要删除的文字/杂物，红色区域将由本地 LaMa 补齐。'
-      : '选择 2× 或 4×，设计尺寸保持不变，只提高图片像素密度。';
+  status.value = '';
   candidates.value = []; candidateMasks.value = []; points.value = []; history.value = []; future.value = []; operations.value = [];
-  openingCheckpoint.value = undefined;
   nextStateId = 1;
   currentStateId = 0;
   saving.value = false;
@@ -778,6 +858,7 @@ async function open(next: CutoutEditorSnapshot) {
   sessionId.value = ''; requestRevision.value++;
   try {
     const element = await loadHtmlImage(next.dataUrl);
+    if (generation !== editorGeneration || !visible.value) return;
     image.value = element;
     originalImage.value = element;
     const canvas = document.createElement('canvas'); canvas.width = element.naturalWidth; canvas.height = element.naturalHeight;
@@ -786,7 +867,10 @@ async function open(next: CutoutEditorSnapshot) {
     context.drawImage(element, 0, 0);
     source.value = context.getImageData(0, 0, canvas.width, canvas.height);
     labs.value = createLabPixels(source.value);
-    selection.value = next.maskDataUrl ? await maskFromDataUrl(next.maskDataUrl) : new Uint8Array(canvas.width * canvas.height);
+    const initialMask = next.maskDataUrl ? await maskFromDataUrl(next.maskDataUrl) : new Uint8Array(canvas.width * canvas.height);
+    if (generation !== editorGeneration || !visible.value) return;
+    cutoutDraft.value = initialMask;
+    selection.value = mode.value === 'cutout' ? new Uint8Array(cutoutDraft.value) : new Uint8Array(canvas.width * canvas.height);
     maskRevision.value++;
     Object.assign(settings, {
       tolerance: 20, contiguous: true, fillHoles: true, expand: 0,
@@ -797,13 +881,16 @@ async function open(next: CutoutEditorSnapshot) {
     });
     upscaleScale.value = next.upscaleScale === 4 ? 4 : next.upscaleScale === 2 ? 2 : recommendedUpscaleScale.value;
     compareOriginal.value = false;
-    openingCheckpoint.value = captureCheckpoint();
-    await nextTick(); fit(); render(); dialog.value?.focus();
+    await nextTick(); refreshFit(); render(); dialog.value?.focus();
+    resizeObserver?.disconnect(); resizeObserver = new ResizeObserver(refreshFit);
+    if (viewport.value) resizeObserver.observe(viewport.value);
     props.backend.health().then(health => {
+      if (generation !== editorGeneration || !visible.value) return;
       samAvailable.value = Boolean(health.ok && health.checkpointFound);
-      if (!samAvailable.value) error.value = String(health.error || '本机 SAM 2 不可用；仍可使用魔棒和画笔。');
-    }).catch(failure => { samAvailable.value = false; error.value = failure.message || String(failure); });
+      if (!samAvailable.value && mode.value === 'cutout') { tool.value = 'wand'; status.value = '智能选择暂不可用，可使用魔棒或画笔。'; }
+    }).catch(() => { if (generation !== editorGeneration) return; samAvailable.value = false; if (mode.value === 'cutout') tool.value = 'wand'; });
     props.backend.localHealth().then(health => {
+      if (generation !== editorGeneration || !visible.value) return;
       localHealthState.value = health;
       localHealthChecked.value = true;
       const unavailable = localModeError();
@@ -811,135 +898,175 @@ async function open(next: CutoutEditorSnapshot) {
       else if (mode.value !== 'cutout'
         && /(?:IOPaint|LaMa|Real-ESRGAN).*(?:不存在|不可用)/.test(error.value)) error.value = '';
     }).catch(failure => {
+      if (generation !== editorGeneration || !visible.value) return;
       localHealthState.value = {};
       localHealthChecked.value = true;
       if (mode.value !== 'cutout') error.value = failure.message || String(failure);
     });
   } catch (failure) {
+    if (generation !== editorGeneration || !visible.value) return;
     visible.value = false;
     snapshot.value = undefined;
     throw failure;
-  } finally {
-    initializing = false;
   }
 }
 
 watch(settings, () => {
   render();
-  if (visible.value && !initializing && !restoringCheckpoint) markChanged();
 }, { deep: true });
-watch(previewBackground, render);
-watch([mode, compareOriginal], () => {
-  if (mode.value === 'cutout') status.value = '点击主体开始智能选择；Alt+单击添加背景排除点。';
-  else if (mode.value === 'repair') status.value = '框选或涂抹需要删除的文字/杂物，红色区域将由本地 LaMa 补齐。';
-  else status.value = '选择 2× 或 4×，设计尺寸保持不变，只提高图片像素密度。';
-  tool.value = mode.value === 'cutout' ? 'smart' : mode.value === 'repair' ? 'rect' : 'pan';
-  const unavailable = localModeError();
-  if (mode.value !== 'cutout' && unavailable) error.value = unavailable;
-  else if (mode.value !== 'cutout' && localAvailable.value && /(?:IOPaint|LaMa|Real-ESRGAN).*(?:不存在|不可用)/.test(error.value)) error.value = '';
-  render();
+watch([compareOriginal, previewResult], () => render());
+watch([showUnsaved, pendingRepairSave], async ([unsaved, pending]) => {
+  await nextTick();
+  if (unsaved || pending) dialog.value?.querySelector<HTMLElement>('.cutout-unsaved button')?.focus();
+  else if (visible.value) dialog.value?.focus();
 });
-marchTimer = setInterval(() => { if (visible.value) { march = (march + 1) % 8; render(); } }, 160);
-onBeforeUnmount(() => { if (marchTimer) clearInterval(marchTimer); if (sessionId.value) void props.backend.closeSession(sessionId.value); });
+marchTimer = setInterval(() => { if (visible.value && hasSelection.value && !previewResult.value && !compareOriginal.value && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) { march = (march + 1) % 8; render(true); } }, 160);
+onBeforeUnmount(() => { editorGeneration++; resizeObserver?.disconnect(); if (marchTimer) clearInterval(marchTimer); invalidateSam(); if (localProgressId.value) void props.backend.cancel(localProgressId.value).catch(() => {}); });
 defineExpose({ open, close: requestClose });
 </script>
 
 <template>
   <div v-if="visible" class="cutout-editor-overlay">
-    <section ref="dialog" class="cutout-editor" role="dialog" aria-modal="true" aria-label="图像处理编辑器" tabindex="-1" @keydown="keydown">
-      <header class="cutout-editor-header">
-        <div><strong>图像处理</strong><span>{{ snapshot?.name }}</span></div>
+    <section ref="dialog" class="cutout-editor" role="dialog" aria-modal="true" aria-label="图像处理编辑器" tabindex="-1"
+      @keydown="keydown" @keyup.space="spaceHeld = false" @focusout="spaceHeld = false">
+      <header class="cutout-editor-header" :inert="showUnsaved || pendingRepairSave">
+        <div class="cutout-title"><strong>图像处理</strong><span :title="snapshot?.name">{{ snapshot?.name }}</span></div>
         <nav class="cutout-mode-tabs" aria-label="图像处理模式">
-          <button type="button" :class="{ active: mode === 'cutout' }" :aria-pressed="mode === 'cutout'" :disabled="localBusy || samBusy || saving" @click="mode = 'cutout'">智能抠图</button>
-          <button type="button" :class="{ active: mode === 'repair' }" :aria-pressed="mode === 'repair'" :disabled="localBusy || samBusy || saving" @click="mode = 'repair'">局部修复</button>
-          <button type="button" :class="{ active: mode === 'upscale' }" :aria-pressed="mode === 'upscale'" :disabled="localBusy || samBusy || saving" @click="mode = 'upscale'">高清化</button>
+          <button v-for="item in (['cutout', 'repair', 'upscale'] as CutoutEditorMode[])" :key="item" type="button"
+            :class="{ active: mode === item }" :aria-pressed="mode === item" :disabled="busy" @click="changeMode(item)">
+            {{ { cutout: '智能抠图', repair: '局部修复', upscale: '高清化' }[item] }}
+          </button>
         </nav>
         <div class="cutout-editor-header-actions">
-          <button type="button" :disabled="!canUndo || localBusy || samBusy || saving" aria-label="撤销" title="撤销 Ctrl+Z" @click="undo">撤销</button>
-          <button type="button" :disabled="!canRedo || localBusy || samBusy || saving" aria-label="重做" title="重做 Ctrl+Y" @click="redo">重做</button>
-          <button type="button" aria-label="关闭图像处理" @click="requestClose">×</button>
+          <button type="button" :disabled="!canUndo || busy" title="撤销 Ctrl/Cmd+Z" @click="undo">撤销</button>
+          <button type="button" :disabled="!canRedo || busy" title="重做 Ctrl/Cmd+Shift+Z" @click="redo">重做</button>
+          <button type="button" aria-label="关闭图像处理" :disabled="saving" @click="requestClose">×</button>
         </div>
       </header>
-      <div class="cutout-editor-body">
-        <aside class="cutout-editor-tools" aria-label="选区工具">
-          <button v-if="mode === 'cutout'" :class="{ active: tool === 'smart' }" type="button" :disabled="samBusy || !samAvailable" title="智能选择 S" @click="tool = 'smart'">智能选择</button>
-          <button v-if="mode === 'cutout'" :class="{ active: tool === 'smart-background' }" type="button" :disabled="samBusy || !samAvailable" title="背景排除点" @click="tool = 'smart-background'">排除点</button>
-          <button v-if="mode === 'repair'" :class="{ active: tool === 'rect' }" type="button" :disabled="localBusy" title="矩形框选 R" @click="tool = 'rect'">矩形框选</button>
-          <button v-if="mode !== 'upscale'" :class="{ active: tool === 'wand' }" type="button" :disabled="localBusy" title="色域魔棒 W" @click="tool = 'wand'">魔棒</button>
-          <button v-if="mode !== 'upscale'" :class="{ active: tool === 'brush-add' }" type="button" :disabled="localBusy" :title="mode === 'repair' ? '修复画笔 B' : '保留画笔 B'" @click="tool = 'brush-add'">{{ mode === 'repair' ? '修复画笔' : '保留画笔' }}</button>
-          <button v-if="mode !== 'upscale'" :class="{ active: tool === 'brush-subtract' }" type="button" :disabled="localBusy" title="排除画笔 E" @click="tool = 'brush-subtract'">排除画笔</button>
-          <button :class="{ active: tool === 'pan' }" type="button" title="平移" @click="tool = 'pan'">平移</button>
-        </aside>
-        <main ref="viewport" class="cutout-editor-viewport" :class="`preview-${previewBackground}`">
-          <div class="cutout-editor-stage" :style="stageStyle">
-            <canvas ref="baseCanvas" aria-hidden="true" />
-            <canvas ref="resultCanvas" aria-hidden="true" />
-            <canvas ref="overlayCanvas" :aria-label="mode === 'repair' ? '局部修复选区画布' : '智能抠图选区画布'" @pointerdown="pointerDown" @pointermove="pointerMove" @pointerup="pointerUp" @pointercancel="pointerUp" />
-            <button v-for="(point, index) in (mode === 'cutout' ? points : [])" :key="`${index}-${point.x}-${point.y}`" class="cutout-point" :class="point.label"
-              type="button" :style="{ left: `${point.x / dimensions.width * 100}%`, top: `${point.y / dimensions.height * 100}%` }"
-              :title="`${point.label === 'foreground' ? '保留点' : '排除点'}，单击删除`" @click.stop="removePoint(index)" />
+      <div class="cutout-editor-body" :inert="showUnsaved || pendingRepairSave">
+        <div class="cutout-workspace">
+          <div class="cutout-viewbar">
+            <div class="cutout-segmented" v-if="mode !== 'upscale'">
+              <button type="button" :aria-pressed="!previewResult" :class="{ active: !previewResult }" @click="previewResult = false">选区</button>
+              <button type="button" :aria-pressed="previewResult" :class="{ active: previewResult }" @click="previewResult = true">结果</button>
+            </div>
+            <span v-else>高清预览</span>
+            <button type="button" :aria-pressed="compareOriginal" :class="{ active: compareOriginal }" @click="compareOriginal = !compareOriginal">{{ compareOriginal ? '返回当前图' : '对比原图' }}</button>
+            <button class="cutout-panel-toggle" type="button" :aria-expanded="panelOpen" aria-controls="cutout-settings" @click="panelOpen = !panelOpen">工具与参数</button>
           </div>
-        </main>
-        <aside class="cutout-editor-settings">
-          <div v-if="samBusy || localBusy || saving" class="cutout-inline-status" role="status" aria-live="polite"><span aria-hidden="true" />{{ status }}<button v-if="localBusy" type="button" @click="cancelLocalTask">取消</button></div>
-          <p v-else class="cutout-help">{{ status }}</p>
-          <p v-if="error" class="cutout-error" role="alert">{{ error }}</p>
-          <fieldset v-if="mode === 'cutout' && candidates.length" class="cutout-candidates"><legend>SAM 候选</legend>
-            <button v-for="(candidate, index) in candidates" :key="candidate.index" type="button" :class="{ active: selectedCandidate === index }" @click="selectCandidate(index)">
-              候选 {{ index + 1 }} <span>{{ Math.round(candidate.score * 100) }}%</span>
-            </button>
-          </fieldset>
-          <fieldset v-if="mode !== 'upscale'"><legend>选区方式</legend>
-            <div class="cutout-segmented">
-              <button v-for="mode in (['replace', 'add', 'subtract'] as CutoutCombineMode[])" :key="mode" type="button" :class="{ active: combine === mode }" @click="combine = mode">{{ { replace: '替换', add: '添加', subtract: '减去' }[mode] }}</button>
+          <main ref="viewport" class="cutout-editor-viewport" :class="[`preview-${previewBackground}`, { 'is-panning': spaceHeld || mode === 'upscale' || compareOriginal || previewResult }]"
+            aria-label="图像画布" @pointerdown.self="pointerDown" @pointermove="pointerMove" @pointerup="pointerUp" @pointercancel="pointerUp">
+            <div class="cutout-editor-stage" :class="`preview-${previewBackground}`" :style="stageStyle">
+              <canvas ref="baseCanvas" aria-hidden="true" />
+              <canvas ref="resultCanvas" aria-hidden="true" />
+              <canvas ref="overlayCanvas" :aria-label="mode === 'repair' ? '局部修复选区画布' : '图像编辑画布'" @pointerdown.stop="pointerDown" />
+              <template v-if="mode === 'cutout' && !previewResult && !compareOriginal">
+                <button v-for="(point, index) in points" :key="`${index}-${point.x}-${point.y}`" class="cutout-point" :class="point.label"
+                  type="button" :disabled="busy" :style="{ left: `${point.x / dimensions.width * 100}%`, top: `${point.y / dimensions.height * 100}%` }"
+                  :aria-label="`${point.label === 'foreground' ? '保留点' : '排除点'} ${index + 1}`"
+                  title="点击移除提示点" @click.stop="removePoint(index)" />
+              </template>
             </div>
-            <label>魔棒容差 <output>{{ settings.tolerance }}</output><input v-model.number="settings.tolerance" type="range" min="0" max="100" /></label>
-            <label class="cutout-check"><input v-model="settings.contiguous" type="checkbox" />仅选择连续区域</label>
-          </fieldset>
-          <fieldset v-if="mode !== 'upscale'"><legend>画笔</legend>
-            <label>大小 <output>{{ settings.brushSize }}px</output><input v-model.number="settings.brushSize" type="range" min="1" max="200" /></label>
-            <label>硬度 <output>{{ settings.brushHardness }}%</output><input v-model.number="settings.brushHardness" type="range" min="0" max="100" /></label>
-          </fieldset>
-          <fieldset v-if="mode === 'cutout'"><legend>透明边缘</legend>
-            <label class="cutout-check"><input v-model="settings.fillHoles" type="checkbox" />填充内部孔洞</label>
-            <label>扩展/收缩 <output>{{ settings.expand }}px</output><input v-model.number="settings.expand" type="range" min="-10" max="10" /></label>
-            <label>羽化 <output>{{ settings.feather }}px</output><input v-model.number="settings.feather" type="range" min="0" max="12" /></label>
-            <label>去杂色 <output>{{ settings.decontaminate }}%</output><input v-model.number="settings.decontaminate" type="range" min="0" max="100" /></label>
-          </fieldset>
-          <fieldset v-if="mode === 'repair'"><legend>修复边缘</legend>
-            <label>蒙版扩展 <output>{{ settings.repairExpand }}px</output><input v-model.number="settings.repairExpand" type="range" min="0" max="16" /></label>
-            <label>合成羽化 <output>{{ settings.repairFeather }}px</output><input v-model.number="settings.repairFeather" type="range" min="0" max="12" /></label>
-            <p class="cutout-field-note">扩展用于覆盖文字抗锯齿残边；蒙版以外像素保持原样。</p>
-          </fieldset>
-          <fieldset v-if="mode === 'upscale'"><legend>高清设置</legend>
-            <div class="cutout-segmented">
-              <button type="button" :class="{ active: upscaleScale === 2 }" :aria-pressed="upscaleScale === 2" @click="upscaleScale = 2">2×{{ recommendedUpscaleScale === 2 ? ' 推荐' : '' }}</button>
-              <button type="button" :class="{ active: upscaleScale === 4 }" :aria-pressed="upscaleScale === 4" @click="upscaleScale = 4">4×{{ recommendedUpscaleScale === 4 ? ' 推荐' : '' }}</button>
+          </main>
+          <div class="cutout-canvas-footer">
+            <span class="cutout-pixel-size">{{ dimensions.width }} × {{ dimensions.height }} px</span>
+            <div class="cutout-preview-controls">
+              <button type="button" @click="fitWindow">适应</button>
+              <button type="button" @click="setZoom(1)">100%</button>
+              <button type="button" aria-label="缩小" @click="setZoom(zoom / 1.25)">−</button>
+              <output aria-label="缩放比例">{{ Math.round(zoom * 100) }}%</output>
+              <button type="button" aria-label="放大" @click="setZoom(zoom * 1.25)">＋</button>
             </div>
-            <dl class="cutout-dimensions"><div><dt>当前像素</dt><dd>{{ dimensions.width }} × {{ dimensions.height }}</dd></div><div><dt>输出像素</dt><dd>{{ dimensions.width * upscaleScale }} × {{ dimensions.height * upscaleScale }}</dd></div><div><dt>Figma 尺寸</dt><dd>保持不变</dd></div></dl>
-            <p class="cutout-field-note">使用 RealESRGAN_x4plus_anime_6B。小于 128px 的图标建议 4×；画布放大预览仍会放大像素，请用 100% 检查最终清晰度。</p>
-          </fieldset>
-          <div v-if="mode !== 'upscale'" class="cutout-small-actions"><button type="button" :disabled="localBusy" @click="invert">反选</button><button type="button" :disabled="localBusy" @click="clearSelection">清空选区</button></div>
+            <label class="cutout-background-label" title="仅改变画布预览背景，不会修改图片或去除图片自身的白色背景">预览背景<select v-model="previewBackground"><option value="checker">棋盘格</option><option value="white">白色</option><option value="black">黑色</option></select></label>
+            <span class="cutout-zoom-hint">{{ zoom > 1 ? '预览放大 · 不改变像素' : '空格 + 拖动平移' }}</span>
+          </div>
+        </div>
+        <button v-if="panelOpen" class="cutout-panel-scrim" type="button" aria-label="收起工具面板" @click="panelOpen = false" />
+        <aside id="cutout-settings" class="cutout-editor-settings" :class="{ 'is-open': panelOpen }" aria-label="工具与参数">
+          <div class="cutout-panel-heading"><strong>{{ { cutout: '保留主体，去除背景', repair: '移除内容，补齐画面', upscale: '提升图片清晰度' }[mode] }}</strong><button class="cutout-panel-toggle" type="button" @click="panelOpen = false">收起</button></div>
+          <div class="cutout-panel-scroll">
+            <p class="cutout-help">{{ toolHint }}</p>
+            <fieldset v-if="mode !== 'upscale'" :disabled="busy" class="cutout-tool-section"><legend>选择工具</legend>
+              <div class="cutout-tool-grid">
+                <button v-if="mode === 'cutout'" type="button" :class="{ active: tool === 'smart' || tool === 'smart-background' }" :aria-pressed="tool === 'smart' || tool === 'smart-background'" :disabled="!samAvailable" :title="samAvailable ? '智能选择 S' : '智能选择暂不可用，请使用魔棒或画笔'" @click="tool = 'smart'; previewResult = false">智能选择</button>
+                <button v-else type="button" :class="{ active: tool === 'rect' }" :aria-pressed="tool === 'rect'" @click="tool = 'rect'; previewResult = false">矩形</button>
+                <button type="button" :class="{ active: tool === 'wand' }" :aria-pressed="tool === 'wand'" title="魔棒 W" @click="tool = 'wand'; previewResult = false">魔棒</button>
+                <button type="button" :class="{ active: isBrush }" :aria-pressed="isBrush" title="画笔 B" @click="tool = 'brush-add'; previewResult = false">画笔</button>
+              </div>
+              <div v-if="tool === 'smart' || tool === 'smart-background'" class="cutout-segmented">
+                <button type="button" :class="{ active: tool === 'smart' }" :aria-pressed="tool === 'smart'" @click="tool = 'smart'">保留点</button>
+                <button type="button" :class="{ active: tool === 'smart-background' }" :aria-pressed="tool === 'smart-background'" @click="tool = 'smart-background'">排除点</button>
+              </div>
+              <div v-if="isBrush" class="cutout-segmented">
+                <button type="button" :class="{ active: tool === 'brush-add' }" :aria-pressed="tool === 'brush-add'" @click="tool = 'brush-add'">增加选区</button>
+                <button type="button" :class="{ active: tool === 'brush-subtract' }" :aria-pressed="tool === 'brush-subtract'" @click="tool = 'brush-subtract'">擦除选区</button>
+              </div>
+              <div v-if="tool === 'wand' || tool === 'rect'" class="cutout-segmented">
+                <button v-for="item in (['replace', 'add', 'subtract'] as CutoutCombineMode[])" :key="item" type="button" :class="{ active: combine === item }" :aria-pressed="combine === item" @click="combine = item">{{ { replace: '替换', add: '添加', subtract: '减去' }[item] }}</button>
+              </div>
+              <template v-if="tool === 'wand'">
+                <label>颜色容差 <output>{{ settings.tolerance }}</output><input aria-label="颜色容差" v-model.number="settings.tolerance" type="range" min="0" max="100" /></label>
+                <label class="cutout-check"><input v-model="settings.contiguous" type="checkbox" />仅选择连续区域</label>
+              </template>
+              <template v-if="isBrush">
+                <label>画笔大小 <output>{{ settings.brushSize }} px</output><input aria-label="画笔大小" v-model.number="settings.brushSize" type="range" min="1" max="200" /></label>
+                <label>画笔硬度 <output>{{ settings.brushHardness }}%</output><input aria-label="画笔硬度" v-model.number="settings.brushHardness" type="range" min="0" max="100" /></label>
+              </template>
+            </fieldset>
+            <fieldset v-if="mode === 'cutout' && candidates.length" :disabled="busy" class="cutout-candidates"><legend>选择分割结果</legend>
+              <div class="cutout-candidate-grid"><button v-for="(candidate, index) in candidates" :key="candidate.index" type="button" :class="{ active: selectedCandidate === index }" :aria-pressed="selectedCandidate === index" :title="`模型评分 ${Math.round(candidate.score * 100)}%`" @click="selectCandidate(index)">
+                <img :src="candidate.maskDataUrl" alt="" /><span>结果 {{ index + 1 }}</span>
+              </button></div>
+            </fieldset>
+            <div v-if="mode !== 'upscale'" class="cutout-small-actions">
+              <button type="button" :disabled="busy" @click="invert">反选</button><button type="button" :disabled="busy || !hasSelection" @click="clearSelection">清空选区</button>
+            </div>
+            <details v-if="mode !== 'upscale'" class="cutout-edge-details"><summary>{{ mode === 'cutout' ? '边缘优化' : '修复边缘' }}</summary>
+              <fieldset :disabled="busy" @pointerdown="beginEdgeChange" @keydown="beginEdgeChange" @change="endEdgeChange" @focusout="endEdgeChange">
+                <template v-if="mode === 'cutout'">
+                  <label class="cutout-check"><input v-model="settings.fillHoles" type="checkbox" />填充内部孔洞</label>
+                  <label>扩展 / 收缩 <output>{{ settings.expand }} px</output><input aria-label="扩展 / 收缩" v-model.number="settings.expand" type="range" min="-10" max="10" /></label>
+                  <label>羽化 <output>{{ settings.feather }} px</output><input aria-label="羽化" v-model.number="settings.feather" type="range" min="0" max="12" /></label>
+                  <label>去杂色 <output>{{ settings.decontaminate }}%</output><input aria-label="去杂色" v-model.number="settings.decontaminate" type="range" min="0" max="100" /></label>
+                </template>
+                <template v-else>
+                  <label>蒙版扩展 <output>{{ settings.repairExpand }} px</output><input aria-label="蒙版扩展" v-model.number="settings.repairExpand" type="range" min="0" max="16" /></label>
+                  <label>合成羽化 <output>{{ settings.repairFeather }} px</output><input aria-label="合成羽化" v-model.number="settings.repairFeather" type="range" min="0" max="12" /></label>
+                  <p class="cutout-field-note">扩展覆盖文字边缘，蒙版以外保持原样。</p>
+                </template>
+              </fieldset>
+            </details>
+            <fieldset v-if="mode === 'upscale'" :disabled="busy"><legend>放大倍率</legend>
+              <div class="cutout-scale-options">
+                <button v-for="scale in ([2, 4] as const)" :key="scale" type="button" :class="{ active: upscaleScale === scale }" :aria-pressed="upscaleScale === scale" @click="upscaleScale = scale">{{ scale }}× <span>{{ recommendedUpscaleScale === scale ? '推荐' : '更大尺寸' }}</span></button>
+              </div>
+              <dl class="cutout-dimensions"><div><dt>当前像素</dt><dd>{{ dimensions.width }} × {{ dimensions.height }}</dd></div><div><dt>输出像素</dt><dd>{{ dimensions.width * upscaleScale }} × {{ dimensions.height * upscaleScale }}</dd></div><div><dt>设计尺寸</dt><dd>保持不变</dd></div></dl>
+              <p class="cutout-field-note">适合图标和插画。使用本机 CPU 处理，大图需要更长时间；完成后可在 100% 下检查细节。</p>
+            </fieldset>
+            <p v-if="error" class="cutout-error" role="alert">{{ error }}</p>
+            <p v-if="status && !busy" class="cutout-help" role="status">{{ status }}</p>
+          </div>
+          <div class="cutout-mode-action">
+            <div v-if="busy" class="cutout-inline-status" role="status" aria-live="polite"><span class="cutout-spinner" aria-hidden="true" />{{ status || '正在处理…' }}<button v-if="localBusy" type="button" @click="cancelLocalTask">取消处理</button></div>
+            <template v-else-if="mode === 'cutout'"><strong>{{ hasSelection ? '选区已就绪' : '先选择要保留的主体' }}</strong><p>{{ hasSelection ? '可直接保存，或切换功能继续处理。' : '使用上方工具在图片上建立选区。' }}</p><button type="button" :disabled="!hasSelection" @click="previewResult = !previewResult">{{ previewResult ? '继续调整选区' : '预览抠图结果' }}</button></template>
+            <template v-else><p>{{ !localHealthChecked ? '正在检查本地模型…' : !localAvailable ? '本地模型不可用，请检查安装环境。' : mode === 'repair' && !hasSelection ? '先框选或涂抹要移除的区域。' : '处理后可继续编辑，最后统一保存。' }}</p><button class="primary" type="button" :disabled="!localAvailable || (mode === 'repair' && !hasSelection)" @click="mode === 'repair' ? runLocalRepair() : runUpscale()">{{ mode === 'repair' ? '开始修复' : '开始高清化' }}</button></template>
+          </div>
         </aside>
       </div>
-      <footer class="cutout-editor-footer">
-        <div class="cutout-preview-controls">
-          <label>预览背景<select v-model="previewBackground"><option value="checker">棋盘格</option><option value="white">白色</option><option value="black">黑色</option></select></label>
-          <button type="button" @click="fit">适应</button><button type="button" @click="zoom = 1">100%</button>
-          <button type="button" aria-label="缩小" @click="zoom = Math.max(.05, zoom / 1.25)">−</button><output>{{ Math.round(zoom * 100) }}%</output><button type="button" aria-label="放大" @click="zoom = Math.min(16, zoom * 1.25)">＋</button>
-        </div>
+      <footer class="cutout-editor-footer" :inert="showUnsaved || pendingRepairSave">
+        <span class="cutout-save-state" role="status">{{ busy ? (saving ? '正在保存…' : '正在处理，可打开工具面板查看状态') : operations.length ? `已有 ${operations.length} 项处理 · 未保存` : mode === 'cutout' && hasSelection ? '抠图预览 · 未保存' : hasRepairDraft ? '修复选区待处理' : '尚未修改图片' }}</span>
         <div class="cutout-save-actions">
-          <button v-if="mode !== 'cutout'" type="button" :aria-pressed="compareOriginal" :disabled="localBusy || saving" @click="compareOriginal = !compareOriginal">{{ compareOriginal ? '查看结果' : '对比原图' }}</button>
-          <button v-if="snapshot?.processingRestore" type="button" :disabled="localBusy || samBusy || saving" @click="restoreProcessedImage">恢复处理前图片</button>
-          <button type="button" :disabled="localBusy || samBusy || saving || !dirty" @click="resetSession">重置本次修改</button>
-          <button type="button" :disabled="saving" @click="requestClose">关闭</button>
-          <button v-if="mode === 'cutout'" class="primary" type="button" :disabled="!hasSelection || samBusy || localBusy || saving" @click="applyCutoutToWorkingImage">保留选区并透明背景</button>
-          <button v-else-if="mode === 'repair'" class="primary repair" type="button" :disabled="!hasSelection || localBusy || samBusy || saving || !localAvailable" @click="runLocalRepair">移除选中内容并补齐</button>
-          <button v-else class="primary" type="button" :disabled="localBusy || samBusy || saving || !localAvailable" @click="runUpscale">开始 {{ upscaleScale }}× 高清化</button>
-          <button class="primary save-all" type="button" :disabled="!canSave" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
+          <button class="primary" type="button" :disabled="!canSave" :title="canSave ? '保存所有处理结果并关闭' : busy ? '请等待当前处理完成' : '完成抠图选区或图像处理后即可保存'" @click="save()">{{ saving ? '保存中…' : '保存到切图' }}</button>
         </div>
       </footer>
-      <div v-if="showUnsaved" class="cutout-unsaved"><div><strong>{{ localBusy || samBusy ? '取消任务并放弃修改？' : '放弃未保存的修改？' }}</strong><p>{{ localBusy || samBusy ? '当前 AI 任务将被取消，迟到的处理结果不会写入切图。' : '智能抠图、局部修复和高清化的本次结果都不会应用。' }}</p><div><button type="button" @click="showUnsaved = false">继续编辑</button><button type="button" class="danger" @click="closeNow">放弃并关闭</button></div></div></div>
+      <div v-if="showUnsaved || pendingRepairSave" class="cutout-unsaved">
+        <div role="alertdialog" aria-modal="true" :aria-label="pendingRepairSave ? '修复选区尚未处理' : '放弃未保存的修改'">
+          <strong>{{ pendingRepairSave ? '修复选区尚未处理' : busy ? '取消任务并放弃修改？' : '放弃未保存的修改？' }}</strong>
+          <p>{{ pendingRepairSave ? '红色选区尚未执行修复。你可以返回继续修复，或仅保存已经完成的图像处理。' : busy ? '当前任务会被取消，本次编辑不会写入切图。' : '本次抠图、修复和高清化结果都不会写入切图。' }}</p>
+          <div v-if="pendingRepairSave"><button type="button" @click="pendingRepairSave = false; changeMode('repair')">返回修复</button><button class="primary" type="button" @click="save(true)">放弃待修复选区并保存已有结果</button></div>
+          <div v-else><button type="button" @click="showUnsaved = false">继续编辑</button><button class="danger" type="button" @click="closeNow">放弃并关闭</button></div>
+        </div>
+      </div>
     </section>
   </div>
 </template>

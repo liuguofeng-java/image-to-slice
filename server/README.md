@@ -292,10 +292,7 @@ curl http://127.0.0.1:18787/health
 }
 ```
 
-macOS 和 Windows 也可以运行项目根目录中的一键脚本：
-
-- macOS：双击 `一键部署环境.command`。
-- Windows：双击 `一键部署环境.bat`。
+macOS 也可以双击 `server` 目录中的 `一键部署环境.command`。
 
 使用插件期间不要关闭运行 API 服务的终端窗口。
 
@@ -309,7 +306,7 @@ npm run local-models:setup
 
 仓库已将三个模型应用固定为 Git submodule。首次克隆建议使用 `git clone --recurse-submodules <仓库地址>`；已有工作区可以运行 `git submodule update --init --recursive`。即使尚未手工初始化，部署脚本也会优先初始化已登记的 submodule。
 
-Windows 也可以双击 `一键部署本地模型.bat`，macOS 可以双击 `一键部署本地模型.command`。脚本会把固定版本的源码、权重和两个互不冲突的 CPU 虚拟环境放在 `server` 同级目录：
+macOS 也可以双击 `一键部署本地模型.command`。脚本会把固定版本的源码、权重和两个互不冲突的 CPU 虚拟环境放在 `server` 同级目录：
 
 ```text
 image-to-slice/

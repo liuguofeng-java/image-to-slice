@@ -86,7 +86,7 @@ function replacePlaceholder(templateHtml, placeholder, content) {
   const indentation = match[1];
   const inlinedContent = content
     .trimEnd()
-    .split("\n")
+    .split(/\r?\n/)
     .map((line) => line ? `${indentation}${line}` : "")
     .join("\n");
   return templateHtml.replace(placeholderPattern, () => inlinedContent);

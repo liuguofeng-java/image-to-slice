@@ -679,8 +679,7 @@
               const layer = card?.querySelector(".slice-layer");
               sliceDraft = null;
               await addSliceAsset(
-                { x: 0, y: 0, width: screen.width, height: screen.height },
-                { clientX: event.clientX, clientY: event.clientY }
+                { x: 0, y: 0, width: screen.width, height: screen.height }
               );
               if (card && layer) renderSliceOverlay(card, layer, pending.image);
             }
@@ -703,7 +702,7 @@
             const draft = normalizeDraftRect(sliceDraft, currentManifest.screen);
             sliceDraft = null;
             if (draft.width >= 8 && draft.height >= 8) {
-              await addSliceAsset(draft, { clientX: event.clientX, clientY: event.clientY });
+              await addSliceAsset(draft);
             } else {
               renderSliceOverlay(card, layer, image);
             }
@@ -725,7 +724,7 @@
           const draft = normalizeDraftRect(sliceDraft, currentManifest.screen);
           sliceDraft = null;
           if (draft.width >= 8 && draft.height >= 8) {
-            await addSliceAsset(draft, { clientX: event.clientX, clientY: event.clientY });
+            await addSliceAsset(draft);
           }
           document.body.style.userSelect = "";
         }
@@ -869,7 +868,7 @@
           image.src = activeImage.dataUrl;
           layer.hidden = false;
           renderSliceOverlay(card, layer, image);
-          repairPreviewButton.textContent = "预览补齐";
+          setResourceToolbarLabel(repairPreviewButton, "预览补齐", false);
           return;
         }
         repairPreviewButton.disabled = true;
@@ -879,7 +878,7 @@
           repairPreviewActive = true;
           layer.hidden = false;
           renderSliceOverlay(card, layer, image);
-          repairPreviewButton.textContent = "退出补齐预览";
+          setResourceToolbarLabel(repairPreviewButton, "退出补齐预览", true);
         } catch (error) {
           setStatus(`生成补齐预览失败：${error.message || String(error)}`, "error");
         } finally {
@@ -1675,7 +1674,7 @@
         activeSliceId = sliceId;
         sliceEdit = null;
         repairPreviewActive = false;
-        repairPreviewButton.textContent = "预览补齐";
+        setResourceToolbarLabel(repairPreviewButton, "预览补齐", false);
         ensureSliceState(manifest);
         renderActiveResult(manifest);
         scheduleWorkspaceDraftSave();
@@ -1850,6 +1849,14 @@
           : ` · R${values.join("/")}`;
       }
 
+      function setResourceToolbarLabel(button, label, pressed) {
+        button.textContent = label;
+        button.setAttribute("aria-label", label);
+        button.dataset.tooltip = label;
+        button.title = label;
+        if (typeof pressed === "boolean") button.setAttribute("aria-pressed", String(pressed));
+      }
+
       function renderSelectedSliceActions() {
         const selectedAssets = getSelectedSliceAssets();
         const asset = selectedAssets.find((entry) => entry.id === activeSliceId) || selectedAssets[0];
@@ -1866,15 +1873,17 @@
         const localTransparent = Boolean(asset.transparent && !asset.aiTransparent);
         const hasActiveChildren = getDirectChildRemovalRegions(asset, allAssets).length > 0;
         const canRestorePosition = selectedAssets.some(hasSliceInitialPositionChanged);
+        const visibilityLabel = asset.hidden ? "显示图层" : "隐藏图层";
+        const transparencyLabel = localTransparent ? "恢复透明前" : "边缘透明";
         selectedSliceActions.innerHTML = isMultiSelection ? `
-          <button type="button" data-slice-toolbar-action="restore-position"${isAnyProcessing || !canRestorePosition ? " disabled" : ""}>还原选中位置</button>
+          <button type="button" data-slice-toolbar-action="restore-position" aria-label="还原选中位置" data-tooltip="还原选中位置" title="还原选中位置"${isAnyProcessing || !canRestorePosition ? " disabled" : ""}>还原选中位置</button>
         ` : `
-          <button type="button" data-slice-toolbar-action="preview"${isAnyProcessing || !isRaster ? " disabled" : ""}>图片预览</button>
-          <button type="button" data-slice-toolbar-action="visibility"${isAnyProcessing ? " disabled" : ""}>${asset.hidden ? "显示图层" : "隐藏图层"}</button>
-          <button type="button" data-slice-toolbar-action="transparent"${isAnyProcessing || !isRaster || (hasActiveChildren && !localTransparent) ? " disabled" : ""}>${localTransparent ? "恢复透明前" : "边缘透明"}</button>
-          <button type="button" data-slice-toolbar-action="ai-cutout"${isAnyProcessing || !isRaster ? " disabled" : ""}>AI抠图</button>
-          <button type="button" data-slice-toolbar-action="restore-position"${isAnyProcessing || !canRestorePosition ? " disabled" : ""}>还原位置</button>
-          ${asset.aiProcessing ? '<button class="danger" type="button" data-slice-toolbar-action="cancel">取消当前任务</button>' : ""}
+          <button type="button" data-slice-toolbar-action="preview" aria-label="图片预览" data-tooltip="图片预览" title="图片预览"${isAnyProcessing || !isRaster ? " disabled" : ""}>图片预览</button>
+          <button type="button" data-slice-toolbar-action="visibility" data-visibility-state="${asset.hidden ? "hidden" : "visible"}" aria-label="${visibilityLabel}" data-tooltip="${visibilityLabel}" title="${visibilityLabel}"${isAnyProcessing ? " disabled" : ""}>${visibilityLabel}</button>
+          <button type="button" data-slice-toolbar-action="transparent" aria-label="${transparencyLabel}" data-tooltip="${transparencyLabel}" title="${transparencyLabel}"${isAnyProcessing || !isRaster || (hasActiveChildren && !localTransparent) ? " disabled" : ""}>${transparencyLabel}</button>
+          <button type="button" data-slice-toolbar-action="ai-cutout" aria-label="AI 抠图" data-tooltip="AI 抠图" title="AI 抠图"${isAnyProcessing || !isRaster ? " disabled" : ""}>AI 抠图</button>
+          <button type="button" data-slice-toolbar-action="restore-position" aria-label="还原位置" data-tooltip="还原位置" title="还原位置"${isAnyProcessing || !canRestorePosition ? " disabled" : ""}>还原位置</button>
+          ${asset.aiProcessing ? '<button class="danger" type="button" data-slice-toolbar-action="cancel" aria-label="取消当前任务" data-tooltip="取消当前任务" title="取消当前任务">取消当前任务</button>' : ""}
         `;
         selectedSliceActions.hidden = false;
         selectedSliceActions.querySelectorAll("[data-slice-toolbar-action]").forEach((button) => {
@@ -1908,7 +1917,10 @@
         transparentAllButton.disabled = hasProcessingAssets || rasterAssets.length === 0 || rasterAssets.every((asset) => asset.transparent);
         toggleAllSlicesButton.disabled = assets.length === 0 || hasProcessingAssets;
         repairPreviewButton.disabled = assets.length === 0 || hasProcessingAssets;
-        toggleAllSlicesButton.textContent = assets.length > 0 && assets.every((asset) => asset.hidden) ? "全部显示" : "全部隐藏";
+        const allSlicesHidden = assets.length > 0 && assets.every((asset) => asset.hidden);
+        setResourceToolbarLabel(toggleAllSlicesButton, allSlicesHidden ? "全部显示" : "全部隐藏");
+        toggleAllSlicesButton.dataset.visibilityState = allSlicesHidden ? "hidden" : "visible";
+        setResourceToolbarLabel(repairPreviewButton, repairPreviewActive ? "退出补齐预览" : "预览补齐", repairPreviewActive);
         if (!assets.length) closeSliceSettingsDrawer();
         if (!sliceListView) sliceListView = ImageToSliceVue.mountSliceList(cutGrid, handleSliceListAction);
         const numberById = new Map(assets.map((asset, index) => [asset.id, index + 1]));
@@ -3277,7 +3289,7 @@
             renderSliceOverlay(card, layer, image);
             return;
           }
-          await addSliceAsset(draft, { clientX: event.clientX, clientY: event.clientY });
+          await addSliceAsset(draft);
         });
 
         layer.addEventListener("pointercancel", () => {
@@ -4801,7 +4813,7 @@
         return texts.length;
       }
 
-      async function addSliceAsset(placement, typePickerPoint = null) {
+      async function addSliceAsset(placement) {
         const activeImage = getActiveResultImage();
         if (!activeImage) {
           return;
@@ -4855,7 +4867,6 @@
         if (card && layer && image) renderSliceOverlay(card, layer, image);
         renderCutModules(currentManifest);
         scheduleWorkspaceDraftSave();
-        if (typePickerPoint) openSliceTypePopover(asset, typePickerPoint);
         return asset;
       }
 

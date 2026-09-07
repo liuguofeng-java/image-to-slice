@@ -52,16 +52,16 @@
           <button id="draftsTrigger" class="drafts-trigger" type="button" hidden>切图记录</button>
         </div>
       </header>
-      <div class="resource-toolbar" aria-label="资源操作">
-        <div class="cut-head-actions">
-          <button id="exportSlices" class="cut-batch" type="button" disabled>导出切图包</button>
-          <button id="transparentAll" class="cut-batch" type="button" disabled>全部透明</button>
-          <button id="toggleAllSlices" class="cut-batch" type="button" disabled>全部隐藏</button>
-          <button id="repairPreview" class="cut-batch" type="button" disabled>预览补齐</button>
-        </div>
+      <div class="resource-toolbar" role="toolbar" aria-label="切图工具栏" aria-orientation="horizontal">
         <div id="sliceToolMode" class="slice-tool-mode" role="group" aria-label="切图画布工具">
-          <button class="active" type="button" data-slice-tool="select" aria-pressed="true">选择</button>
-          <button type="button" data-slice-tool="draw" aria-pressed="false">连续框选</button>
+          <button class="active" type="button" data-slice-tool="select" aria-label="选择" aria-pressed="true" data-tooltip="选择" title="选择">选择</button>
+          <button type="button" data-slice-tool="draw" aria-label="连续框选" aria-pressed="false" data-tooltip="连续框选" title="连续框选">连续框选</button>
+        </div>
+        <div class="cut-head-actions" role="group" aria-label="批量操作">
+          <button id="exportSlices" class="cut-batch" type="button" aria-label="导出切图包" data-tooltip="导出切图包" title="导出切图包" disabled>导出切图包</button>
+          <button id="transparentAll" class="cut-batch" type="button" aria-label="全部透明" data-tooltip="全部透明" title="全部透明" disabled>全部透明</button>
+          <button id="toggleAllSlices" class="cut-batch" type="button" aria-label="全部隐藏" data-tooltip="全部隐藏" title="全部隐藏" disabled>全部隐藏</button>
+          <button id="repairPreview" class="cut-batch" type="button" aria-label="预览补齐" aria-pressed="false" data-tooltip="预览补齐" title="预览补齐" disabled>预览补齐</button>
         </div>
         <div id="selectedSliceActions" class="selected-slice-actions" role="group" aria-label="所选资源操作" hidden></div>
       </div>
