@@ -19,8 +19,6 @@ export interface SliceListRow {
   processing: boolean;
   processingLabel: string;
   auditFailed: boolean;
-  hasActiveChildren: boolean;
-  localTransparent: boolean;
   aiTransparent: boolean;
   aiTransparencyCurrent: boolean;
   locallyRepaired: boolean;
@@ -28,7 +26,7 @@ export interface SliceListRow {
 }
 
 export type SliceActionName = 'preview' | 'remove' | 'cancel' | 'visibility' | 'settings'
-  | 'transparent' | 'ai-cutout';
+  | 'ai-cutout';
 
 export type SliceListEvent =
   | { type: SliceActionName; id: string }

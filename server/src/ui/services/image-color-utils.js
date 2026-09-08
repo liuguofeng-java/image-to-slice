@@ -97,10 +97,6 @@ function averageBackgroundColors(samples, fallback = { r: 244, g: 246, b: 250, l
   return averageColors(backgroundCandidates.slice(start, end), fallback);
 }
 
-function sampleEdgeColor(pixels, width, height) {
-  return sampleEdgeStats(pixels, width, height).color;
-}
-
 function getPixelColor(pixels, width, x, y) {
   const index = (y * width + x) * 4;
   const r = pixels[index];
@@ -130,7 +126,6 @@ if (typeof module !== "undefined") {
     getPixelColor,
     mixColors,
     rgbToHex,
-    sampleEdgeColor,
     sampleEdgeStats,
     toRgb
   };

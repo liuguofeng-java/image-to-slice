@@ -87,7 +87,6 @@
       const sliceToolMode = document.getElementById("sliceToolMode");
       const sliceTypePopover = document.getElementById("sliceTypePopover");
       const exportSlicesButton = document.getElementById("exportSlices");
-      const transparentAllButton = document.getElementById("transparentAll");
       const toggleAllSlicesButton = document.getElementById("toggleAllSlices");
       const repairPreviewButton = document.getElementById("repairPreview");
       const selectedSliceActions = document.getElementById("selectedSliceActions");
@@ -838,10 +837,6 @@
       });
       document.addEventListener("keydown", (event) => {
         if (event.key === "Escape") closeModelRoutePickers();
-      });
-
-      transparentAllButton.addEventListener("click", async () => {
-        await makeAllSlicesTransparent();
       });
 
       toggleAllSlicesButton.addEventListener("click", () => {
@@ -1867,20 +1862,15 @@
         }
         const isMultiSelection = selectedAssets.length > 1;
         const isAnyProcessing = selectedAssets.some((entry) => entry.aiProcessing);
-        const allAssets = getActiveResultImage()?.sliceManifest?.assets || [];
         const contentType = normalizeSliceContentType(asset.contentType, "image");
         const isRaster = contentType === "background" || contentType === "image";
-        const localTransparent = Boolean(asset.transparent && !asset.aiTransparent);
-        const hasActiveChildren = getDirectChildRemovalRegions(asset, allAssets).length > 0;
         const canRestorePosition = selectedAssets.some(hasSliceInitialPositionChanged);
         const visibilityLabel = asset.hidden ? "显示图层" : "隐藏图层";
-        const transparencyLabel = localTransparent ? "恢复透明前" : "边缘透明";
         selectedSliceActions.innerHTML = isMultiSelection ? `
           <button type="button" data-slice-toolbar-action="restore-position" aria-label="还原选中位置" data-tooltip="还原选中位置" title="还原选中位置"${isAnyProcessing || !canRestorePosition ? " disabled" : ""}>还原选中位置</button>
         ` : `
           <button type="button" data-slice-toolbar-action="preview" aria-label="图片预览" data-tooltip="图片预览" title="图片预览"${isAnyProcessing || !isRaster ? " disabled" : ""}>图片预览</button>
           <button type="button" data-slice-toolbar-action="visibility" data-visibility-state="${asset.hidden ? "hidden" : "visible"}" aria-label="${visibilityLabel}" data-tooltip="${visibilityLabel}" title="${visibilityLabel}"${isAnyProcessing ? " disabled" : ""}>${visibilityLabel}</button>
-          <button type="button" data-slice-toolbar-action="transparent" aria-label="${transparencyLabel}" data-tooltip="${transparencyLabel}" title="${transparencyLabel}"${isAnyProcessing || !isRaster || (hasActiveChildren && !localTransparent) ? " disabled" : ""}>${transparencyLabel}</button>
           <button type="button" data-slice-toolbar-action="ai-cutout" aria-label="AI 抠图" data-tooltip="AI 抠图" title="AI 抠图"${isAnyProcessing || !isRaster ? " disabled" : ""}>AI 抠图</button>
           <button type="button" data-slice-toolbar-action="restore-position" aria-label="还原位置" data-tooltip="还原位置" title="还原位置"${isAnyProcessing || !canRestorePosition ? " disabled" : ""}>还原位置</button>
           ${asset.aiProcessing ? '<button class="danger" type="button" data-slice-toolbar-action="cancel" aria-label="取消当前任务" data-tooltip="取消当前任务" title="取消当前任务">取消当前任务</button>' : ""}
@@ -1913,8 +1903,6 @@
         const assets = activeImage.sliceManifest.assets;
         const hasProcessingAssets = assets.some((asset) => asset.aiProcessing);
         exportSlicesButton.disabled = assets.length === 0 || hasProcessingAssets;
-        const rasterAssets = assets.filter((asset) => ["background", "image"].includes(asset.contentType) && asset.dataUrl);
-        transparentAllButton.disabled = hasProcessingAssets || rasterAssets.length === 0 || rasterAssets.every((asset) => asset.transparent);
         toggleAllSlicesButton.disabled = assets.length === 0 || hasProcessingAssets;
         repairPreviewButton.disabled = assets.length === 0 || hasProcessingAssets;
         const allSlicesHidden = assets.length > 0 && assets.every((asset) => asset.hidden);
@@ -1952,8 +1940,6 @@
               description: details.join(" · "), selected: isSliceSelected(asset.id),
               hidden: Boolean(asset.hidden), processing: Boolean(asset.aiProcessing),
               processingLabel: asset.aiProcessingLabel || "", auditFailed: Boolean(asset.auditFailed),
-              hasActiveChildren: getDirectChildRemovalRegions(asset, assets).length > 0,
-              localTransparent: Boolean(asset.transparent && !asset.aiTransparent),
               aiTransparent: Boolean(asset.aiTransparent), aiTransparencyCurrent,
               locallyRepaired: Boolean(asset.localInpaintMethod),
               upscaled: Boolean(asset.upscaleMethod)
@@ -1998,10 +1984,6 @@
             refreshSliceVisibility();
             renderCutModules(currentManifest);
             openSliceSettingsDrawer(activeSliceId);
-            break;
-          case "transparent":
-            if (asset.transparent && !asset.aiTransparent) restoreSliceTransparency(asset);
-            else await makeSliceTransparent(event.id);
             break;
           case "ai-cutout":
             await openSliceSmartCutout(event.id);
@@ -2667,7 +2649,6 @@
         closeSliceSettingsDrawer();
         renderSelectedSliceActions();
         exportSlicesButton.disabled = true;
-        transparentAllButton.disabled = true;
         sliceListView?.update({ imageId: "", rows: [], animateReorder: false });
       }
 
@@ -4959,91 +4940,6 @@
         activeImage.sliceManifest.assets.splice(Math.max(0, sourceIndex), 0, processedAsset);
       }
 
-      async function makeSliceTransparent(id) {
-        const asset = getActiveSliceAsset(id);
-        if (!asset) {
-          return;
-        }
-        setBusy(true, `正在本地透明化切图：${asset.name}`);
-        try {
-          const restoreState = createSliceTransparencyRestoreState(asset);
-          const sourceDataUrl = restoreState.dataUrl;
-          const transparentDataUrl = await removeEdgeBackground(sourceDataUrl);
-          recordSliceHistory();
-          applySliceTransparencyResult(asset, {
-            dataUrl: transparentDataUrl,
-            ai: false
-          });
-          activeSliceId = id;
-          refreshSliceVisibility();
-          renderCutModules(currentManifest);
-          scheduleWorkspaceDraftSave();
-        } catch (error) {
-          setStatus(`透明化失败：${error.message || String(error)}`, "error");
-        } finally {
-          releaseBusyIfIdle();
-        }
-      }
-
-      function restoreSliceTransparency(asset) {
-        const restoreDataUrl = getSliceTransparencyRestoreDataUrl(asset);
-        if (!restoreDataUrl) {
-          return;
-        }
-        recordSliceHistory();
-        restoreSliceTransparencyState(asset);
-        reconcileAutomaticSliceParents(getActiveResultImage()?.sliceManifest?.assets || []);
-        activeSliceId = asset.id;
-        refreshSliceVisibility();
-        renderCutModules(currentManifest);
-        scheduleWorkspaceDraftSave();
-      }
-
-      async function makeAllSlicesTransparent() {
-        const activeImage = getActiveResultImage();
-        ensureImageSliceState(activeImage);
-        const assets = activeImage?.sliceManifest?.assets || [];
-        const pendingAssets = assets.filter((asset) => ["background", "image"].includes(asset.contentType) && asset.dataUrl && !asset.transparent);
-        if (pendingAssets.length === 0) {
-          renderCutModules(currentManifest);
-          return;
-        }
-
-        setBusy(true, `正在批量本地透明化 ${pendingAssets.length} 个切图…`);
-        transparentAllButton.disabled = true;
-        let changed = false;
-        try {
-          const processedAssets = [];
-          for (const asset of pendingAssets) {
-            const restoreState = createSliceTransparencyRestoreState(asset);
-            const sourceDataUrl = restoreState.dataUrl;
-            processedAssets.push({
-              asset,
-              restoreState,
-              sourceDataUrl,
-              transparentDataUrl: await removeEdgeBackground(sourceDataUrl)
-            });
-          }
-          recordSliceHistory();
-          processedAssets.forEach(({ asset, restoreState, transparentDataUrl }) => {
-            applySliceTransparencyResult(asset, {
-              dataUrl: transparentDataUrl,
-              ai: false
-            });
-          });
-          changed = true;
-          activeSliceId = pendingAssets[pendingAssets.length - 1].id;
-          refreshSliceVisibility();
-          renderCutModules(currentManifest);
-        } catch (error) {
-          renderCutModules(currentManifest);
-          setStatus(`批量透明化失败：${error.message || String(error)}`, "error");
-        } finally {
-          if (changed) scheduleWorkspaceDraftSave();
-          releaseBusyIfIdle();
-        }
-      }
-
       function ensureSliceCutoutEditor() {
         if (sliceCutoutEditorView) return sliceCutoutEditorView;
         const host = document.getElementById("sliceCutoutEditorRoot");
@@ -5802,40 +5698,6 @@
           placement.width,
           placement.height
         );
-        return canvas.toDataURL("image/png");
-      }
-
-      async function removeEdgeBackground(dataUrl) {
-        const source = await loadImageElement(dataUrl);
-        const canvas = document.createElement("canvas");
-        canvas.width = source.naturalWidth || source.width;
-        canvas.height = source.naturalHeight || source.height;
-        const context = canvas.getContext("2d", { willReadFrequently: true });
-        context.drawImage(source, 0, 0);
-        const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-        const pixels = imageData.data;
-        const background = sampleEdgeColor(pixels, canvas.width, canvas.height);
-        const hardThreshold = 34;
-        const softThreshold = 82;
-
-        for (let index = 0; index < pixels.length; index += 4) {
-          const distance = colorDistance(
-            pixels[index],
-            pixels[index + 1],
-            pixels[index + 2],
-            background.r,
-            background.g,
-            background.b
-          );
-          if (distance <= hardThreshold) {
-            pixels[index + 3] = 0;
-          } else if (distance < softThreshold) {
-            const alphaRatio = (distance - hardThreshold) / (softThreshold - hardThreshold);
-            pixels[index + 3] = Math.round(pixels[index + 3] * alphaRatio);
-          }
-        }
-
-        context.putImageData(imageData, 0, 0);
         return canvas.toDataURL("image/png");
       }
 

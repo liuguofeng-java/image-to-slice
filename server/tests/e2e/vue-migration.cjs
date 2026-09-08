@@ -48,6 +48,8 @@ test('legacy trimmed workspace restores the subject position through the real to
     let frame = page.frames().find(item => item !== page.mainFrame());
     const restore = () => frame.locator('[data-slice-toolbar-action="restore-position"]');
     await restore().waitFor();
+    assert.equal(await frame.locator('#transparentAll, [data-slice-toolbar-action="transparent"]').count(), 0, '旧边缘透明及批量入口已移除');
+    assert.equal(await frame.locator('[data-slice-toolbar-action="ai-cutout"]').count(), 1, 'AI 抠图入口保留');
     assert.equal(await restore().isEnabled(), true, 'old restored coordinates must be recognized as displaced');
     await restore().click();
     await frame.waitForFunction(() => document.querySelector('[data-slice-toolbar-action="restore-position"]')?.disabled === true);
@@ -123,8 +125,8 @@ test("built plugin exposes the Vue smart cutout editor bridge", async () => {
       await background.selectOption(value);
       for (const selector of ['.cutout-editor-viewport', '.cutout-editor-stage']) {
         const style = await frame.locator(selector).evaluate(el => ({ color: getComputedStyle(el).backgroundColor, image: getComputedStyle(el).backgroundImage }));
-        assert.equal(style.color, color);
-        assert.equal(style.image.includes('linear-gradient'), value === 'checker');
+        assert.equal(style.color, selector.endsWith('-viewport') ? 'rgb(246, 247, 251)' : color);
+        assert.equal(style.image.includes('linear-gradient'), selector.endsWith('-stage') && value === 'checker');
       }
       const pixels = await frame.locator('.cutout-editor-stage canvas').nth(1).evaluate(canvas => Array.from(canvas.getContext('2d').getImageData(0, 0, 1, 1).data));
       assert.deepEqual(pixels, initialPixels[1], '预览背景切换不能修改图片像素');
@@ -153,7 +155,7 @@ test("built plugin exposes the Vue smart cutout editor bridge", async () => {
         if (url.endsWith('/health')) return { ok: true, checkpointFound: true, iopaintRootFound: true, lamaModelFound: true, realesrganRootFound: true, realesrganModelFound: true, pythonDependenciesFound: true };
         const payload = JSON.parse(options?.body || '{}');
         if (url.endsWith('/session')) return { sessionId: 'test-session', embeddingMs: 1 };
-        if (url.endsWith('/predict')) return { requestRevision: payload.requestRevision, candidates: [{ index: 0, score: .9, maskDataUrl: window.__testImage }], inferenceMs: 1 };
+        if (url.endsWith('/predict')) return { requestRevision: payload.requestRevision, candidates: Array.from({ length: window.__multipleCandidates ? 3 : 1 }, (_, index) => ({ index, score: .9 - index * .1, maskDataUrl: window.__testImage })), inferenceMs: 1 };
         if (url.includes('/cancel')) return {};
         if (url.endsWith('/inpaint') || url.endsWith('/upscale')) {
           window.__calls.push({ url, payload });
@@ -177,6 +179,14 @@ test("built plugin exposes the Vue smart cutout editor bridge", async () => {
     };
     await frame.evaluate(() => window.__openEditor('cutout'));
     await button('智能选择').waitFor();
+    assert.equal(await button('预览抠图结果').count(), 0, '结果切换只保留画布上方一个入口');
+    const undoInitiallyDisabled = await button('撤销').isDisabled();
+    const edgeSummary = frame.locator('.cutout-edge-details summary').filter({ hasText: '边缘优化' });
+    await edgeSummary.focus(); await edgeSummary.press('Space');
+    assert.equal(await edgeSummary.evaluate(el => el.parentElement.open), true, '折叠区可用空格键展开');
+    await frame.locator('.cutout-edge-details summary').filter({ hasText: '边缘优化' }).click();
+    await button('结果').click(); await button('选区').click();
+    assert.equal(await button('撤销').isDisabled(), undoInitiallyDisabled, '展开面板和预览切换不记录撤销');
     assert.equal(await frame.getByText('颜色容差', { exact: false }).count(), 0);
     await button('画笔').click();
     await frame.getByRole('slider', { name: /^画笔大小/ }).fill('35');
@@ -186,11 +196,13 @@ test("built plugin exposes the Vue smart cutout editor bridge", async () => {
     await button('魔棒').click();
     await frame.locator('.cutout-editor-stage canvas').last().click({ position: { x: 10, y: 10 } });
     await button('反选').click();
-    await button('预览抠图结果').click();
+    await button('结果').click();
     assert.equal(await frame.locator('.cutout-point').count(), 0);
     await frame.evaluate(() => { window.__failSave = true; });
     await button('保存到切图').click();
     await frame.getByRole('alert').filter({ hasText: '模拟保存失败' }).waitFor();
+    assert.equal(await frame.locator('.cutout-editor-footer [role="alert"]').count(), 1);
+    assert.equal(await frame.locator('.cutout-editor-settings [role="alert"]').count(), 0);
     assert.equal(await frame.locator('.cutout-editor').isVisible(), true);
     await frame.evaluate(() => { window.__failSave = false; });
     await button('局部修复').click(); await draw();
@@ -210,7 +222,11 @@ test("built plugin exposes the Vue smart cutout editor bridge", async () => {
     // Cancellation must ignore even successful responses that arrive later.
     await frame.evaluate(() => { window.__deferModel = true; return window.__openEditor('repair'); });
     assert.equal(await button('局部修复').getAttribute('aria-pressed'), 'true');
-    await draw(); await button('开始修复').click(); await button('取消处理').click();
+    await draw(); await button('开始修复').click();
+    assert.equal(await frame.locator('.cutout-editor-footer .cutout-spinner').count(), 1);
+    assert.equal(await frame.locator('.cutout-editor-settings [role="status"]').count(), 0);
+    await page.screenshot({ path: path.join(process.env.TEMP || '/tmp', 'image-editor-processing.png') });
+    await button('取消处理').click();
     await frame.evaluate(() => { window.__deferModel = false; window.__finishModel(); });
     await frame.waitForTimeout(100);
     assert.equal(await button('保存到切图').isDisabled(), true, '取消后成功响应不能生成可保存结果');
@@ -219,6 +235,7 @@ test("built plugin exposes the Vue smart cutout editor bridge", async () => {
     await frame.evaluate(() => { window.__failModel = true; return window.__openEditor('repair'); });
     await draw(); await button('开始修复').click();
     await frame.getByRole('alert').filter({ hasText: '模拟处理失败' }).waitFor();
+    await page.screenshot({ path: path.join(process.env.TEMP || '/tmp', 'image-editor-error.png') });
     assert.equal(await button('开始修复').isEnabled(), true);
     await frame.evaluate(() => { window.__failModel = false; });
     await button('开始修复').click(); await frame.getByText('局部修复完成', { exact: false }).waitFor();
@@ -266,7 +283,7 @@ test("built plugin exposes the Vue smart cutout editor bridge", async () => {
       await frame.getByRole('spinbutton', { name: side + '保留间距' }).fill(value);
       await frame.getByRole('spinbutton', { name: side + '保留间距' }).press('Tab');
     }
-    await button('预览抠图结果').click();
+    await button('结果').click();
     const trimPreview = await frame.locator('.cutout-editor-stage canvas').nth(1).evaluate(canvas => ({ width: canvas.width, height: canvas.height, url: canvas.toDataURL() }));
     assert.equal(trimPreview.width, 57); assert.equal(trimPreview.height, 33);
     await button('撤销').click();
@@ -300,7 +317,7 @@ test("built plugin exposes the Vue smart cutout editor bridge", async () => {
     await frame.locator('.cutout-editor-stage canvas').last().click({ position: { x: 65, y: 45 } });
     await frame.locator('.cutout-trim-details summary').click();
     await frame.getByRole('checkbox', { name: '裁掉多余透明留白' }).check();
-    await button('预览抠图结果').click();
+    await button('结果').click();
     const combinedPreview = await frame.locator('.cutout-editor-stage canvas').nth(1).evaluate(canvas => canvas.toDataURL());
     await frame.evaluate(() => { window.__failSave = true; });
     await button('保存到切图').click(); await frame.getByRole('alert').filter({ hasText: '模拟保存失败' }).waitFor();
@@ -310,6 +327,32 @@ test("built plugin exposes the Vue smart cutout editor bridge", async () => {
     const combined = await frame.evaluate(() => window.__cutoutCommits.at(-1));
     assert.deepEqual(combined.operations.map(op => op.kind), ['cutout', 'trim']);
     assert.equal(combined.dataUrl, combinedPreview);
+    // Candidate cards use composited subject pixels, only when there is a choice.
+    await frame.evaluate(() => window.__openEditor('cutout'));
+    await button('智能选择').click();
+    await frame.locator('.cutout-editor-stage canvas').last().click({ position: { x: 20, y: 20 } });
+    await frame.getByText('分割完成', { exact: false }).waitFor();
+    assert.equal(await frame.locator('.cutout-candidates').count(), 0);
+    await frame.evaluate(() => { window.__multipleCandidates = true; });
+    await frame.locator('.cutout-editor-stage canvas').last().click({ position: { x: 45, y: 30 } });
+    await frame.locator('.cutout-candidate-grid img').first().waitFor();
+    assert.equal(await frame.locator('.cutout-candidate-grid img').count(), 3);
+    const thumb = await frame.locator('.cutout-candidate-grid img').first().evaluate(async img => {
+      await img.decode();
+      const canvas = document.createElement('canvas'); canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext('2d'); ctx.drawImage(img, 0, 0);
+      const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      let hasGreen = false; for (let i = 0; i < pixels.length; i += 4) if (pixels[i + 3] && pixels[i + 1] > pixels[i] + 10) hasGreen = true;
+      return { hasGreen, width: canvas.width, height: canvas.height };
+    });
+    assert.equal(thumb.hasGreen, true, '缩略图必须包含主体颜色，不能只是灰度蒙版');
+    assert.ok(thumb.width <= 144 && thumb.height <= 96);
+    await button('结果 2').click();
+    assert.equal(await button('结果 2').getAttribute('aria-pressed'), 'true');
+    assert.equal(await button('结果 2').locator('.cutout-candidate-check').count(), 1);
+    await page.screenshot({ path: path.join(process.env.TEMP || '/tmp', 'image-editor-candidates.png') });
+    await button('关闭图像处理').click(); await button('放弃并关闭').click();
+    await frame.evaluate(() => { window.__multipleCandidates = false; });
     // Trim controls remain usable in the compact tool drawer.
     for (const width of [1280, 390]) {
       await page.setViewportSize({ width, height: 844 });
@@ -323,6 +366,11 @@ test("built plugin exposes the Vue smart cutout editor bridge", async () => {
       await page.screenshot({ path: path.join(process.env.TEMP || '/tmp', `image-editor-trim-${width}.png`) });
       const controls = frame.locator('.cutout-trim-inputs');
       assert.equal(await controls.evaluate(el => el.scrollWidth <= el.clientWidth), true);
+      const positions = await controls.evaluate(el => Object.fromEntries(['top', 'left', 'right', 'bottom'].map(side => {
+        const box = el.querySelector(`.trim-${side}`).getBoundingClientRect(); return [side, { x: box.x, y: box.y }];
+      })));
+      assert.ok(positions.top.y < positions.left.y && positions.left.y === positions.right.y && positions.bottom.y > positions.left.y);
+      assert.ok(positions.left.x < positions.top.x && positions.right.x > positions.top.x);
       await button('关闭图像处理').click(); await button('放弃并关闭').click();
     }
     // Verify layout and keep screenshots outside the repository.
@@ -335,11 +383,28 @@ test("built plugin exposes the Vue smart cutout editor bridge", async () => {
       assert.equal(await frame.locator('.cutout-editor').evaluate(el => el.scrollWidth <= el.clientWidth), true);
       assert.ok(Number((await frame.getByLabel('缩放比例').innerText()).replace('%','')) <= 200);
       assert.equal(await button('保存到切图').isVisible(), true);
+      if (width >= 640) {
+        const header = await frame.locator('.cutout-editor-header').boundingBox();
+        const tabs = await frame.locator('.cutout-mode-tabs').boundingBox();
+        assert.ok(Math.abs((tabs.x + tabs.width / 2) - (header.x + header.width / 2)) < 1, '功能标签必须独立居中');
+      }
       if (width < 960) {
         assert.equal(await frame.locator('.cutout-editor-settings').isVisible(), false);
         await button('工具与参数').click(); assert.equal(await button('魔棒').isVisible(), true);
         await page.screenshot({ path: path.join(process.env.TEMP || '/tmp', `image-editor-${width}-tools.png`) });
+        if (width < 640) {
+          const panel = await frame.locator('.cutout-editor-settings').boundingBox();
+          const body = await frame.locator('.cutout-editor-body').boundingBox();
+          assert.ok(panel.height <= body.height * .6 + 1);
+          const stage = await frame.locator('.cutout-editor-stage').boundingBox();
+          assert.ok(stage.width > 0 && stage.height > 0);
+          assert.ok(stage.y + stage.height <= panel.y, '小素材应位于工具抽屉上方，不被遮挡');
+          assert.equal(await frame.locator('.cutout-panel-scrim').evaluate(el => getComputedStyle(el).backgroundColor), 'rgba(32, 35, 42, 0.18)', '悬停遮罩不能覆盖成不透明背景');
+        }
         await button('收起').click();
+        assert.equal(await button('工具与参数').evaluate(el => el === document.activeElement), true);
+        await button('工具与参数').click(); await button('收起').press('Escape');
+        assert.equal(await button('工具与参数').evaluate(el => el === document.activeElement), true);
       }
       await page.screenshot({ path: path.join(process.env.TEMP || '/tmp', `image-editor-${width}.png`) });
       await button('关闭图像处理').click();

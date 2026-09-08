@@ -86,6 +86,8 @@ const saving = ref(false);
 const applying = ref(false);
 const previewResult = ref(false);
 const panelOpen = ref(false);
+const panelToggle = ref<HTMLButtonElement>();
+const settingsPanel = ref<HTMLElement>();
 const pendingRepairSave = ref(false);
 const cutoutDraft = ref(new Uint8Array());
 const repairDraft = ref(new Uint8Array());
@@ -140,6 +142,10 @@ const trimPlan = computed(() => {
   catch (failure) { return { bounds: undefined, error: (failure as Error).message }; }
 });
 const trimmedPixels = computed(() => trimPlan.value.bounds && cutoutPixels.value ? trimImage(cutoutPixels.value, trimPlan.value.bounds) : undefined);
+const trimOutputSize = computed(() => {
+  const bounds = trimPlan.value.bounds;
+  return bounds ? `${bounds.width} × ${bounds.height}` : '—';
+});
 const displayDimensions = computed(() => previewResult.value && !compareOriginal.value && trimPlan.value.bounds
   ? trimPlan.value.bounds : dimensions.value);
 const trimFrameStyle = computed(() => {
@@ -887,6 +893,7 @@ function keydown(event: KeyboardEvent) {
   if (pendingRepairSave.value || showUnsaved.value) return;
   const target = event.target as HTMLElement;
   if (target.matches('input, select, textarea')) return;
+  if (event.code === 'Space' && target.closest('button, summary')) return;
   if (event.code === 'Space') { event.preventDefault(); spaceHeld.value = true; return; }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); void save(); return; }
   if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'i') { event.preventDefault(); invert(); return; }
@@ -982,6 +989,43 @@ watch(trim, () => render(), { deep: true });
 watch(() => trimPlan.value.error, (_next, previous) => {
   if (previous && error.value === previous) error.value = '';
 });
+const footerError = computed(() => error.value && error.value !== trimPlan.value.error ? error.value : '');
+const footerMessage = computed(() => {
+  if (saving.value) return '正在保存…';
+  if (busy.value) return status.value || '正在处理…';
+  if (status.value) return `${status.value}${dirty.value ? ' · 未保存' : ''}`;
+  if (operations.value.length) return `已有 ${operations.value.length} 项处理 · 未保存`;
+  if (mode.value === 'cutout' && trim.enabled) return '边缘切除预览 · 未保存';
+  if (mode.value === 'cutout' && hasSelection.value) return '抠图预览 · 未保存';
+  return hasRepairDraft.value ? '修复选区待处理' : '尚未修改图片';
+});
+// Thumbnails are presentation-only: sample into a small canvas without changing the working image or mask.
+const candidatePreviews = computed(() => {
+  const pixels = source.value;
+  if (!pixels || candidates.value.length < 2) return [];
+  const ratio = Math.min(144 / pixels.width, 96 / pixels.height, 1);
+  const width = Math.max(1, Math.round(pixels.width * ratio)), height = Math.max(1, Math.round(pixels.height * ratio));
+  return candidateMasks.value.map(mask => {
+    const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+    const context = canvas.getContext('2d')!;
+    const output = context.createImageData(width, height);
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+      const sourceIndex = Math.min(pixels.height - 1, Math.floor((y + .5) * pixels.height / height)) * pixels.width
+        + Math.min(pixels.width - 1, Math.floor((x + .5) * pixels.width / width));
+      const target = (y * width + x) * 4;
+      output.data.set(pixels.data.subarray(sourceIndex * 4, sourceIndex * 4 + 3), target);
+      output.data[target + 3] = Math.round(pixels.data[sourceIndex * 4 + 3]! * (mask[sourceIndex] || 0) / 255);
+    }
+    context.putImageData(output, 0, 0);
+    return canvas.toDataURL('image/png');
+  });
+});
+watch(panelOpen, async open => {
+  await nextTick();
+  if (!visible.value || window.matchMedia('(min-width: 960px)').matches) return;
+  if (open) settingsPanel.value?.querySelector<HTMLButtonElement>('.cutout-panel-toggle')?.focus();
+  else panelToggle.value?.focus();
+});
 watch(displayDimensions, async () => { await nextTick(); refreshFit(); });
 watch([showUnsaved, pendingRepairSave], async ([unsaved, pending]) => {
   await nextTick();
@@ -1020,9 +1064,9 @@ defineExpose({ open, close: requestClose });
             </div>
             <span v-else>高清预览</span>
             <button type="button" :aria-pressed="compareOriginal" :class="{ active: compareOriginal }" @click="compareOriginal = !compareOriginal">{{ compareOriginal ? '返回当前图' : '对比原图' }}</button>
-            <button class="cutout-panel-toggle" type="button" :aria-expanded="panelOpen" aria-controls="cutout-settings" @click="panelOpen = !panelOpen">工具与参数</button>
+            <button ref="panelToggle" class="cutout-panel-toggle" type="button" :aria-expanded="panelOpen" aria-controls="cutout-settings" @click="panelOpen = !panelOpen">工具与参数</button>
           </div>
-          <main ref="viewport" class="cutout-editor-viewport" :class="[`preview-${previewBackground}`, { 'is-panning': spaceHeld || mode === 'upscale' || compareOriginal || previewResult }]"
+          <main ref="viewport" class="cutout-editor-viewport" :class="{ 'is-panning': spaceHeld || mode === 'upscale' || compareOriginal || previewResult }" title="按住空格并拖动可平移画布"
             aria-label="图像画布" @pointerdown.self="pointerDown" @pointermove="pointerMove" @pointerup="pointerUp" @pointercancel="pointerUp">
             <div class="cutout-editor-stage" :class="`preview-${previewBackground}`" :style="stageStyle">
               <canvas ref="baseCanvas" aria-hidden="true" />
@@ -1038,8 +1082,8 @@ defineExpose({ open, close: requestClose });
             </div>
           </main>
           <div class="cutout-canvas-footer">
-            <span class="cutout-pixel-size">{{ displayDimensions.width }} × {{ displayDimensions.height }} px</span>
-            <div class="cutout-preview-controls">
+            <span class="cutout-pixel-size" :title="zoom > 1 ? '预览放大，不改变实际像素尺寸' : '实际图片像素尺寸'">{{ displayDimensions.width }} × {{ displayDimensions.height }} px<span v-if="zoom > 1" class="cutout-zoom-hint">预览放大</span></span>
+            <div class="cutout-preview-controls" role="group" aria-label="画布缩放">
               <button type="button" @click="fitWindow">适应</button>
               <button type="button" @click="setZoom(1)">100%</button>
               <button type="button" aria-label="缩小" @click="setZoom(zoom / 1.25)">−</button>
@@ -1047,15 +1091,13 @@ defineExpose({ open, close: requestClose });
               <button type="button" aria-label="放大" @click="setZoom(zoom * 1.25)">＋</button>
             </div>
             <label class="cutout-background-label" title="仅改变画布预览背景，不会修改图片或去除图片自身的白色背景">预览背景<select v-model="previewBackground"><option value="checker">棋盘格</option><option value="white">白色</option><option value="black">黑色</option></select></label>
-            <span class="cutout-zoom-hint">{{ zoom > 1 ? '预览放大 · 不改变像素' : '空格 + 拖动平移' }}</span>
           </div>
         </div>
         <button v-if="panelOpen" class="cutout-panel-scrim" type="button" aria-label="收起工具面板" @click="panelOpen = false" />
-        <aside id="cutout-settings" class="cutout-editor-settings" :class="{ 'is-open': panelOpen }" aria-label="工具与参数">
-          <div class="cutout-panel-heading"><strong>{{ { cutout: '保留主体，去除背景', repair: '移除内容，补齐画面', upscale: '提升图片清晰度' }[mode] }}</strong><button class="cutout-panel-toggle" type="button" @click="panelOpen = false">收起</button></div>
+        <aside ref="settingsPanel" id="cutout-settings" class="cutout-editor-settings" :class="{ 'is-open': panelOpen }" aria-label="工具与参数">
+          <div class="cutout-panel-heading"><strong>{{ { cutout: '抠图设置', repair: '修复设置', upscale: '高清化设置' }[mode] }}</strong><button class="cutout-panel-toggle" type="button" @click="panelOpen = false">收起</button></div>
           <div class="cutout-panel-scroll">
-            <p class="cutout-help">{{ toolHint }}</p>
-            <fieldset v-if="mode !== 'upscale'" :disabled="busy" class="cutout-tool-section"><legend>选择工具</legend>
+            <fieldset v-if="mode !== 'upscale'" :disabled="busy" class="cutout-tool-section"><legend>{{ mode === 'cutout' ? '选择主体' : '选择移除区域' }}</legend>
               <div class="cutout-tool-grid">
                 <button v-if="mode === 'cutout'" type="button" :class="{ active: tool === 'smart' || tool === 'smart-background' }" :aria-pressed="tool === 'smart' || tool === 'smart-background'" :disabled="!samAvailable" :title="samAvailable ? '智能选择 S' : '智能选择暂不可用，请使用魔棒或画笔'" @click="tool = 'smart'; previewResult = false">智能选择</button>
                 <button v-else type="button" :class="{ active: tool === 'rect' }" :aria-pressed="tool === 'rect'" @click="tool = 'rect'; previewResult = false">矩形</button>
@@ -1073,6 +1115,7 @@ defineExpose({ open, close: requestClose });
               <div v-if="tool === 'wand' || tool === 'rect'" class="cutout-segmented">
                 <button v-for="item in (['replace', 'add', 'subtract'] as CutoutCombineMode[])" :key="item" type="button" :class="{ active: combine === item }" :aria-pressed="combine === item" @click="combine = item">{{ { replace: '替换', add: '添加', subtract: '减去' }[item] }}</button>
               </div>
+              <p class="cutout-tool-hint">{{ toolHint }}</p>
               <template v-if="tool === 'wand'">
                 <label>颜色容差 <output>{{ settings.tolerance }}</output><input aria-label="颜色容差" v-model.number="settings.tolerance" type="range" min="0" max="100" /></label>
                 <label class="cutout-check"><input v-model="settings.contiguous" type="checkbox" />仅选择连续区域</label>
@@ -1081,16 +1124,16 @@ defineExpose({ open, close: requestClose });
                 <label>画笔大小 <output>{{ settings.brushSize }} px</output><input aria-label="画笔大小" v-model.number="settings.brushSize" type="range" min="1" max="200" /></label>
                 <label>画笔硬度 <output>{{ settings.brushHardness }}%</output><input aria-label="画笔硬度" v-model.number="settings.brushHardness" type="range" min="0" max="100" /></label>
               </template>
+              <div class="cutout-small-actions">
+                <button type="button" @click="invert">反选</button><button type="button" :disabled="!hasSelection" @click="clearSelection">清空选区</button>
+              </div>
             </fieldset>
-            <fieldset v-if="mode === 'cutout' && candidates.length" :disabled="busy" class="cutout-candidates"><legend>选择分割结果</legend>
+            <fieldset v-if="mode === 'cutout' && candidates.length > 1" :disabled="busy" class="cutout-candidates"><legend>候选结果</legend>
               <div class="cutout-candidate-grid"><button v-for="(candidate, index) in candidates" :key="candidate.index" type="button" :class="{ active: selectedCandidate === index }" :aria-pressed="selectedCandidate === index" :title="`模型评分 ${Math.round(candidate.score * 100)}%`" @click="selectCandidate(index)">
-                <img :src="candidate.maskDataUrl" alt="" /><span>结果 {{ index + 1 }}</span>
+                <img :src="candidatePreviews[index]" alt="" /><span>结果 {{ index + 1 }}</span><span v-if="selectedCandidate === index" class="cutout-candidate-check" aria-hidden="true">✓</span>
               </button></div>
             </fieldset>
-            <div v-if="mode !== 'upscale'" class="cutout-small-actions">
-              <button type="button" :disabled="busy" @click="invert">反选</button><button type="button" :disabled="busy || !hasSelection" @click="clearSelection">清空选区</button>
-            </div>
-            <details v-if="mode !== 'upscale'" class="cutout-edge-details"><summary>{{ mode === 'cutout' ? '边缘优化' : '修复边缘' }}</summary>
+            <details v-if="mode !== 'upscale'" class="cutout-edge-details"><summary><span>{{ mode === 'cutout' ? '边缘优化' : '修复边缘' }}</span><span class="cutout-section-summary">羽化 {{ mode === 'cutout' ? settings.feather : settings.repairFeather }} · 扩展 {{ mode === 'cutout' ? settings.expand : settings.repairExpand }}</span></summary>
               <fieldset :disabled="busy" @pointerdown="beginEdgeChange" @keydown="beginEdgeChange" @change="endEdgeChange" @focusout="endEdgeChange">
                 <template v-if="mode === 'cutout'">
                   <label class="cutout-check"><input v-model="settings.fillHoles" type="checkbox" />填充内部孔洞</label>
@@ -1105,16 +1148,17 @@ defineExpose({ open, close: requestClose });
                 </template>
               </fieldset>
             </details>
-            <details v-if="mode === 'cutout'" class="cutout-edge-details cutout-trim-details"><summary>边缘切除</summary>
+            <details v-if="mode === 'cutout'" class="cutout-edge-details cutout-trim-details"><summary><span>边缘切除</span><span class="cutout-section-summary" :class="{ enabled: trim.enabled }">{{ trim.enabled ? '已开启' : '未开启' }}</span></summary>
               <fieldset :disabled="busy" @pointerdown="beginTrimChange" @keydown="beginTrimChange" @change="endTrimChange" @focusout="endTrimChange">
                 <label class="cutout-check"><input v-model="trim.enabled" type="checkbox" />裁掉多余透明留白</label>
                 <template v-if="trim.enabled">
-                  <label class="cutout-check"><input v-model="trim.linked" type="checkbox" @change="linkTrim" />同步四边</label>
                   <div class="cutout-trim-inputs">
-                    <label v-for="side in (['top', 'bottom', 'left', 'right'] as const)" :key="side">{{ { top: '上', bottom: '下', left: '左', right: '右' }[side] }}<span><input :aria-label="`${{ top: '上', bottom: '下', left: '左', right: '右' }[side]}保留间距`" :value="Number.isFinite(trim[side]) ? trim[side] : ''" type="number" min="0" max="4096" step="1" @input="changeTrimMargin(side, $event)" /> px</span></label>
+                    <label v-for="side in (['top', 'left', 'right', 'bottom'] as const)" :key="side" :class="`trim-${side}`">{{ { top: '上', bottom: '下', left: '左', right: '右' }[side] }}<span><input :aria-label="`${{ top: '上', bottom: '下', left: '左', right: '右' }[side]}保留间距`" :aria-invalid="!!trimPlan.error" aria-describedby="cutout-trim-note" :value="Number.isFinite(trim[side]) ? trim[side] : ''" type="number" min="0" max="4096" step="1" @input="changeTrimMargin(side, $event)" /><span>px</span></span></label>
+                    <div class="cutout-trim-subject" aria-hidden="true">主体</div>
                   </div>
-                  <p class="cutout-field-note">主体四周保留透明间距，不恢复原背景。主体在设计图中的位置和大小不变。</p>
-                  <dl class="cutout-dimensions"><div><dt>裁剪前</dt><dd>{{ dimensions.width }} × {{ dimensions.height }}</dd></div><div><dt>裁剪后</dt><dd>{{ trimPlan.bounds ? `${trimPlan.bounds.width} × ${trimPlan.bounds.height}` : '—' }}</dd></div></dl>
+                  <label class="cutout-check"><input v-model="trim.linked" type="checkbox" @change="linkTrim" />同步四边</label>
+                  <p id="cutout-trim-note" class="cutout-field-note">间距为透明留白，不恢复背景；主体位置与大小不变。</p>
+                  <div class="cutout-trim-size" aria-label="裁剪前后尺寸"><span><small>裁剪前</small>{{ dimensions.width }} × {{ dimensions.height }}</span><span aria-hidden="true">→</span><span><small>裁剪后</small>{{ trimOutputSize }}</span></div>
                   <p v-if="trimPlan.error" class="cutout-error" role="alert">{{ trimPlan.error }}</p>
                 </template>
               </fieldset>
@@ -1126,20 +1170,20 @@ defineExpose({ open, close: requestClose });
               <dl class="cutout-dimensions"><div><dt>当前像素</dt><dd>{{ dimensions.width }} × {{ dimensions.height }}</dd></div><div><dt>输出像素</dt><dd>{{ dimensions.width * upscaleScale }} × {{ dimensions.height * upscaleScale }}</dd></div><div><dt>设计尺寸</dt><dd>保持不变</dd></div></dl>
               <p class="cutout-field-note">适合图标和插画。使用本机 CPU 处理，大图需要更长时间；完成后可在 100% 下检查细节。</p>
             </fieldset>
-            <p v-if="error" class="cutout-error" role="alert">{{ error }}</p>
-            <p v-if="status && !busy" class="cutout-help" role="status">{{ status }}</p>
           </div>
-          <div class="cutout-mode-action">
-            <div v-if="busy" class="cutout-inline-status" role="status" aria-live="polite"><span class="cutout-spinner" aria-hidden="true" />{{ status || '正在处理…' }}<button v-if="localBusy" type="button" @click="cancelLocalTask">取消处理</button></div>
-            <template v-else-if="mode === 'cutout'"><strong>{{ trim.enabled ? '边缘切除预览' : hasSelection ? '选区已就绪' : '先选择要保留的主体' }}</strong><p>{{ hasSelection || trim.enabled ? '可直接保存，或切换功能继续处理。' : '使用上方工具在图片上建立选区。' }}</p><button type="button" :disabled="(!hasSelection && !trim.enabled) || !!trimPlan.error" @click="previewResult = !previewResult">{{ previewResult ? '继续调整选区' : '预览抠图结果' }}</button></template>
-            <template v-else><p>{{ !localHealthChecked ? '正在检查本地模型…' : !localAvailable ? '本地模型不可用，请检查安装环境。' : mode === 'repair' && !hasSelection ? '先框选或涂抹要移除的区域。' : '处理后可继续编辑，最后统一保存。' }}</p><button class="primary" type="button" :disabled="!localAvailable || (mode === 'repair' && !hasSelection)" @click="mode === 'repair' ? runLocalRepair() : runUpscale()">{{ mode === 'repair' ? '开始修复' : '开始高清化' }}</button></template>
+          <div v-if="mode !== 'cutout'" class="cutout-mode-action">
+            <p v-if="!busy && !footerError">{{ !localHealthChecked ? '正在检查本地模型…' : !localAvailable ? '本地模型不可用，请检查安装环境。' : mode === 'repair' && !hasSelection ? '先框选或涂抹要移除的区域。' : '处理后可继续编辑，最后统一保存。' }}</p><button type="button" :disabled="busy || !localAvailable || (mode === 'repair' && !hasSelection)" @click="mode === 'repair' ? runLocalRepair() : runUpscale()">{{ mode === 'repair' ? '开始修复' : '开始高清化' }}</button>
           </div>
         </aside>
       </div>
       <footer class="cutout-editor-footer" :inert="showUnsaved || pendingRepairSave">
-        <span class="cutout-save-state" role="status">{{ busy ? (saving ? '正在保存…' : '正在处理，可打开工具面板查看状态') : operations.length ? `已有 ${operations.length} 项处理 · 未保存` : mode === 'cutout' && trim.enabled ? '边缘切除预览 · 未保存' : mode === 'cutout' && hasSelection ? '抠图预览 · 未保存' : hasRepairDraft ? '修复选区待处理' : '尚未修改图片' }}</span>
+        <div class="cutout-save-state">
+          <p v-if="footerError" class="cutout-footer-error" role="alert">{{ footerError }}</p>
+          <div v-else class="cutout-inline-status" role="status" aria-live="polite"><span v-if="busy" class="cutout-spinner" aria-hidden="true" /><span :title="footerMessage">{{ footerMessage }}</span></div>
+        </div>
         <div class="cutout-save-actions">
-          <button class="primary" type="button" :disabled="!canSave" :title="canSave ? '保存所有处理结果并关闭' : busy ? '请等待当前处理完成' : '完成抠图选区或图像处理后即可保存'" @click="save()">{{ saving ? '保存中…' : '保存到切图' }}</button>
+          <button v-if="localBusy" type="button" @click="cancelLocalTask">取消处理</button>
+          <button class="primary" type="button" :disabled="!canSave" :title="canSave ? '保存所有处理结果并关闭' : busy ? '请等待当前处理完成' : trimPlan.error || '完成抠图选区或图像处理后即可保存'" @click="save()">{{ saving ? '保存中…' : '保存到切图' }}</button>
         </div>
       </footer>
       <div v-if="showUnsaved || pendingRepairSave" class="cutout-unsaved">
