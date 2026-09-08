@@ -1,5 +1,46 @@
 function hasProcessedSliceResult(asset) {
-  return Boolean(asset?.transparent || asset?.aiTransparent || asset?.aiRedrawn || asset?.localInpaintMethod || asset?.upscaleMethod);
+  return Boolean(asset?.trimmed || asset?.transparent || asset?.aiTransparent || asset?.aiRedrawn || asset?.localInpaintMethod || asset?.upscaleMethod);
+}
+
+const sliceGeometrySnapshotKeys = ['placement', 'initialPlacement', 'trimPositionVersion', 'sourcePixelWidth', 'sourcePixelHeight', 'outputPixelWidth', 'outputPixelHeight', 'trimmed', 'upscaleMethod', 'upscaleScale', 'transparent', 'aiTransparent', 'transparentDataUrl', 'aiTransparentDataUrl', 'aiTransparentPlacement', 'cutoutMaskDataUrl', 'cutoutSettings', 'cutoutMethod', 'localInpaintMaskDataUrl', 'localInpaintDataUrl', 'localInpaintMethod', 'parentId', 'imageProcessingRestoreState', 'transparencyRestoreState'];
+function captureSliceGeometryState(asset) {
+  return Object.fromEntries(sliceGeometrySnapshotKeys.map(key => [key, asset?.[key] === undefined ? null : structuredClone(asset[key])]));
+}
+function restoreSliceGeometryState(asset, state) {
+  if (!state) return;
+  for (const key of sliceGeometrySnapshotKeys) {
+    if (!Object.prototype.hasOwnProperty.call(state, key)) continue;
+    if (state[key] == null) delete asset[key];
+    else asset[key] = structuredClone(state[key]);
+  }
+}
+function slicePlacementSignature(placement) {
+  return JSON.stringify(['x', 'y', 'width', 'height'].map(key => Number(placement?.[key]) || 0));
+}
+
+function applySliceTrimResult(asset, result) {
+  const { sourcePixelWidth: W, sourcePixelHeight: H, left, top, outputPixelWidth: width, outputPixelHeight: height } = result;
+  if (![W, H, left, top, width, height].every(Number.isInteger) || W <= 0 || H <= 0 || width <= 0 || height <= 0
+    || width > 16384 || height > 16384 || width * height > 32_000_000 || !result.dataUrl || !asset?.placement) throw new Error('边缘切除尺寸无效。');
+  asset.imageProcessingRestoreState = createSliceImageProcessingRestoreState(asset);
+  const placement = asset.placement;
+  const initial = asset.initialPlacement || placement;
+  // Cropping changes the image origin, not the subject's original design position.
+  asset.initialPlacement = { x: initial.x + left * placement.width / W, y: initial.y + top * placement.height / H };
+  asset.placement = { ...placement, x: placement.x + left * placement.width / W, y: placement.y + top * placement.height / H,
+    width: width * placement.width / W, height: height * placement.height / H };
+  asset.dataUrl = result.dataUrl;
+  asset.trimmed = true;
+  asset.trimPositionVersion = 1;
+  asset.sourcePixelWidth = width; asset.sourcePixelHeight = height;
+  asset.outputPixelWidth = width; asset.outputPixelHeight = height;
+  if (asset.transparent) asset.transparentDataUrl = result.dataUrl;
+  if (asset.aiTransparent) { asset.aiTransparentDataUrl = result.dataUrl; asset.aiTransparentPlacement = { ...asset.placement }; }
+  if (asset.localInpaintMethod) asset.localInpaintDataUrl = result.dataUrl;
+  asset.svgData = null; asset.aiRedrawn = false; asset.aiRedrawnPlacement = null;
+  delete asset.cutoutMaskDataUrl; delete asset.cutoutSessionSourceSignature; delete asset.localInpaintMaskDataUrl;
+  asset.lastAiOperation = 'trim';
+  return true;
 }
 
 function shouldPreserveProcessedSliceResult(asset, geometryChange) {
@@ -8,6 +49,58 @@ function shouldPreserveProcessedSliceResult(asset, geometryChange) {
 
 function shouldRefreshSliceCropAfterPositionRestore(asset) {
   return !isLockedAiCompleteAsset(asset) && !shouldPreserveProcessedSliceResult(asset, "move");
+}
+
+function restoreSliceInitialPosition(asset, normalizePlacement) {
+  if (!asset?.placement || !asset?.initialPlacement) return false;
+  const placement = { ...asset.placement, x: asset.initialPlacement.x, y: asset.initialPlacement.y };
+  // Transparent padding may extend outside the design; rounding or clamping it shifts the subject.
+  asset.placement = asset.trimmed ? placement : normalizePlacement(placement);
+  if (asset.aiTransparent) asset.aiTransparentPlacement = { ...asset.placement };
+  if (asset.aiRedrawn) asset.aiRedrawnPlacement = { ...asset.placement };
+  return true;
+}
+
+async function recoverLegacySliceTrimPosition(asset, decodePixels) {
+  const state = asset?.imageProcessingRestoreState;
+  const geometry = state?.geometryState;
+  if (!asset?.trimmed || asset.trimPositionVersion === 1 || !geometry?.placement
+    || Object.prototype.hasOwnProperty.call(geometry, 'initialPlacement') || geometry.trimmed
+    || asset.upscaleMethod || geometry.upscaleMethod || !asset.initialPlacement || !state.dataUrl) return false;
+  const currentUrl = asset.dataUrl;
+  const currentPlacement = slicePlacementSignature(asset.placement);
+  const initial = { ...asset.initialPlacement };
+  const before = await decodePixels(state.dataUrl);
+  const after = await decodePixels(currentUrl);
+  // Recover only a verifiable crop of identical pixels. Do not guess from a possibly moved preview cache.
+  const alphaBounds = image => {
+    let left = image.width, top = image.height, right = -1, bottom = -1;
+    for (let y = 0; y < image.height; y++) for (let x = 0; x < image.width; x++) {
+      if (!image.data[(y * image.width + x) * 4 + 3]) continue;
+      left = Math.min(left, x); top = Math.min(top, y); right = Math.max(right, x); bottom = Math.max(bottom, y);
+    }
+    return { left, top, width: right - left + 1, height: bottom - top + 1 };
+  };
+  const a = alphaBounds(before), b = alphaBounds(after);
+  if (a.width <= 0 || a.height <= 0 || a.width !== b.width || a.height !== b.height) return false;
+  for (let y = 0; y < a.height; y++) for (let x = 0; x < a.width; x++) {
+    const i = ((y + a.top) * before.width + x + a.left) * 4;
+    const j = ((y + b.top) * after.width + x + b.left) * 4;
+    if (before.data[i + 3] !== after.data[j + 3]) return false;
+    if (before.data[i + 3]) for (let c = 0; c < 3; c++) if (before.data[i + c] !== after.data[j + c]) return false;
+  }
+  const scaleX = geometry.placement.width / before.width, scaleY = geometry.placement.height / before.height;
+  if (Math.abs(asset.placement.width - after.width * scaleX) > 1e-6
+    || Math.abs(asset.placement.height - after.height * scaleY) > 1e-6) return false;
+  if (asset.dataUrl !== currentUrl || asset.imageProcessingRestoreState !== state
+    || slicePlacementSignature(asset.placement) !== currentPlacement
+    || asset.initialPlacement.x !== initial.x || asset.initialPlacement.y !== initial.y) return false;
+  asset.initialPlacement = { x: initial.x + (a.left - b.left) * scaleX, y: initial.y + (a.top - b.top) * scaleY };
+  asset.trimPositionVersion = 1;
+  geometry.initialPlacement = initial;
+  geometry.trimPositionVersion = null;
+  // Do not move the asset here: the existing restore-position action remains undoable.
+  return true;
 }
 
 function isLockedAiCompleteAsset(asset) {
@@ -58,6 +151,7 @@ function createSliceTransparencyRestoreState(asset) {
   }
   return {
     dataUrl: getSliceTransparencySourceDataUrl(asset),
+    geometryState: captureSliceGeometryState(asset),
     aiCompleted: Boolean(asset?.aiCompleted),
     aiRedrawn: Boolean(asset?.aiRedrawn),
     svgData: asset?.svgData || null,
@@ -99,6 +193,7 @@ function restoreSliceTransparencyState(asset) {
   delete asset.cutoutMaskDataUrl;
   delete asset.cutoutSettings;
   delete asset.cutoutSessionSourceSignature;
+  restoreSliceGeometryState(asset, restoreState?.geometryState);
   return true;
 }
 
@@ -176,6 +271,7 @@ function createSliceImageProcessingRestoreState(asset) {
   }
   return {
     dataUrl: asset?.dataUrl || "",
+    geometryState: captureSliceGeometryState(asset),
     svgData: asset?.svgData || null,
     aiRedrawn: Boolean(asset?.aiRedrawn),
     aiRedrawnPlacement: asset?.aiRedrawnPlacement ? { ...asset.aiRedrawnPlacement } : null,
@@ -220,6 +316,7 @@ function restoreSliceImageProcessingState(asset) {
     : null;
   asset.lastAiOperation = restoreState.lastAiOperation || null;
   clearSliceImageProcessingState(asset);
+  restoreSliceGeometryState(asset, restoreState.geometryState);
   return true;
 }
 
@@ -236,6 +333,8 @@ function clearSliceImageProcessingState(asset) {
   delete asset.sourcePixelHeight;
   delete asset.outputPixelWidth;
   delete asset.outputPixelHeight;
+  delete asset.trimmed;
+  delete asset.trimPositionVersion;
 }
 
 function getProcessedSliceResetMessage(asset) {
@@ -259,6 +358,10 @@ function getProcessedSliceResetMessage(asset) {
 
 if (typeof module !== "undefined") {
   module.exports = {
+    recoverLegacySliceTrimPosition,
+    restoreSliceInitialPosition,
+    applySliceTrimResult,
+    slicePlacementSignature,
     applySliceSvgResult,
     applySliceImageProcessingResult,
     applySliceTransparencyResult,

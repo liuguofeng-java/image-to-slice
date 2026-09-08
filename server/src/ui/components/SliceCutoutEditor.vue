@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue';
+import { calculateTrimBounds, defaultTrimSettings, trimImage, type TrimSettings } from '../services/trim-image';
 import {
   applyAlphaMatte,
   combineMasks,
@@ -30,6 +31,7 @@ const props = defineProps<{
 const emit = defineEmits<{ close: [] }>();
 
 interface EditorCheckpoint {
+  trim: TrimSettings;
   mode: CutoutEditorMode;
   cutoutDraft: Uint8Array;
   repairDraft: Uint8Array;
@@ -69,6 +71,8 @@ const snapshot = ref<CutoutEditorSnapshot>();
 const history = ref<EditorCheckpoint[]>([]);
 const future = ref<EditorCheckpoint[]>([]);
 const operations = ref<ImageEditorOperation[]>([]);
+const trim = reactive(defaultTrimSettings());
+let trimBefore: EditorCheckpoint | undefined;
 const maskRevision = ref(0);
 const mode = ref<CutoutEditorMode>('cutout');
 const localBusy = ref(false);
@@ -79,6 +83,7 @@ const upscaleScale = ref<2 | 4>(2);
 const compareOriginal = ref(false);
 const originalImage = ref<HTMLImageElement>();
 const saving = ref(false);
+const applying = ref(false);
 const previewResult = ref(false);
 const panelOpen = ref(false);
 const pendingRepairSave = ref(false);
@@ -86,7 +91,7 @@ const cutoutDraft = ref(new Uint8Array());
 const repairDraft = ref(new Uint8Array());
 const spaceHeld = ref(false);
 const zoomStrategy = ref<'initial' | 'fit' | 'manual'>('initial');
-const busy = computed(() => localBusy.value || samBusy.value || saving.value);
+const busy = computed(() => localBusy.value || samBusy.value || saving.value || applying.value);
 const isBrush = computed(() => tool.value === 'brush-add' || tool.value === 'brush-subtract');
 const hasRepairDraft = computed(() => mode.value === 'repair' ? hasSelection.value : repairDraft.value.some(Boolean));
 const toolHint = computed(() => mode.value === 'upscale' ? '提高图片像素，设计尺寸保持不变。'
@@ -122,14 +127,33 @@ const settings = reactive<CutoutSettings>({
   repairFeather: 2
 });
 const dimensions = computed(() => ({ width: source.value?.width || 1, height: source.value?.height || 1 }));
+const cutoutPixels = computed(() => {
+  maskRevision.value;
+  if (!source.value) return undefined;
+  return mode.value === 'cutout' && hasSelection.value
+    ? applyAlphaMatte(source.value, createAlphaMatte(selection.value, dimensions.value.width, dimensions.value.height, settings), dimensions.value.width, dimensions.value.height, settings.decontaminate)
+    : source.value;
+});
+const trimPlan = computed(() => {
+  if (mode.value !== 'cutout' || !trim.enabled || !cutoutPixels.value) return { bounds: undefined, error: '' };
+  try { return { bounds: calculateTrimBounds(cutoutPixels.value, trim), error: '' }; }
+  catch (failure) { return { bounds: undefined, error: (failure as Error).message }; }
+});
+const trimmedPixels = computed(() => trimPlan.value.bounds && cutoutPixels.value ? trimImage(cutoutPixels.value, trimPlan.value.bounds) : undefined);
+const displayDimensions = computed(() => previewResult.value && !compareOriginal.value && trimPlan.value.bounds
+  ? trimPlan.value.bounds : dimensions.value);
+const trimFrameStyle = computed(() => {
+  const bounds = trimPlan.value.bounds;
+  return bounds ? { left: `${bounds.left * zoom.value}px`, top: `${bounds.top * zoom.value}px`, width: `${bounds.width * zoom.value}px`, height: `${bounds.height * zoom.value}px` } : {};
+});
 const stageStyle = computed(() => ({
-  width: `${dimensions.value.width * zoom.value}px`,
-  height: `${dimensions.value.height * zoom.value}px`
+  width: `${displayDimensions.value.width * zoom.value}px`,
+  height: `${displayDimensions.value.height * zoom.value}px`
 }));
 const canUndo = computed(() => history.value.length > 0);
 const canRedo = computed(() => future.value.length > 0);
-const canSave = computed(() => (operations.value.length > 0 || (mode.value === 'cutout' && hasSelection.value))
-  && !localBusy.value && !samBusy.value && !saving.value);
+const canSave = computed(() => !trimPlan.value.error && (operations.value.length > 0 || (mode.value === 'cutout' && (hasSelection.value || trim.enabled)))
+  && !busy.value);
 const hasSelection = computed(() => {
   maskRevision.value;
   return selection.value.some(Boolean);
@@ -210,22 +234,15 @@ function effectiveSelection() {
 
 function render(overlayOnly = false) {
   if (!source.value || !baseCanvas.value || !resultCanvas.value || !overlayCanvas.value) return;
-  const { width, height } = dimensions.value;
+  const { width, height } = displayDimensions.value;
   for (const canvas of [baseCanvas.value, resultCanvas.value, overlayCanvas.value]) {
     if (canvas.width !== width) canvas.width = width;
     if (canvas.height !== height) canvas.height = height;
   }
   if (!overlayOnly) {
   baseCanvas.value.getContext('2d')?.putImageData(source.value, 0, 0);
-  const result = mode.value === 'cutout' && hasSelection.value && previewResult.value
-    ? applyAlphaMatte(
-        source.value,
-        createAlphaMatte(selection.value, width, height, settings),
-        width,
-        height,
-        settings.decontaminate
-      )
-    : new ImageData(new Uint8ClampedArray(source.value.data), width, height);
+  const result = mode.value === 'cutout' && previewResult.value
+    ? trimmedPixels.value || cutoutPixels.value || source.value : source.value;
   const resultContext = resultCanvas.value.getContext('2d');
   if (compareOriginal.value && originalImage.value && resultContext) {
     resultContext.clearRect(0, 0, width, height);
@@ -304,6 +321,7 @@ function cloneOperation(operation: ImageEditorOperation): ImageEditorOperation {
 function captureCheckpoint(): EditorCheckpoint | undefined {
   if (!source.value) return undefined;
   return {
+    trim: { ...trim },
     mode: mode.value,
     cutoutDraft: new Uint8Array(mode.value === 'cutout' ? selection.value : cutoutDraft.value),
     repairDraft: new Uint8Array(mode.value === 'repair' ? selection.value : repairDraft.value),
@@ -317,6 +335,7 @@ function captureCheckpoint(): EditorCheckpoint | undefined {
 
 async function restoreCheckpoint(checkpoint: EditorCheckpoint) {
   invalidateSam();
+  Object.assign(trim, checkpoint.trim);
   mode.value = checkpoint.mode;
   tool.value = mode.value === 'cutout' ? (samAvailable.value ? 'smart' : 'wand') : mode.value === 'repair' ? 'rect' : 'pan';
   cutoutDraft.value = new Uint8Array(checkpoint.cutoutDraft);
@@ -448,7 +467,7 @@ async function cancelLocalTask() {
 function fit(limit = 8) {
   if (!viewport.value || !source.value) return;
   zoom.value = Math.min(limit, Math.max(0.05,
-    Math.min((viewport.value.clientWidth - 48) / source.value.width, (viewport.value.clientHeight - 48) / source.value.height)));
+    Math.min((viewport.value.clientWidth - 48) / displayDimensions.value.width, (viewport.value.clientHeight - 48) / displayDimensions.value.height)));
 }
 function refreshFit() { if (zoomStrategy.value !== 'manual') fit(zoomStrategy.value === 'initial' ? 2 : 8); }
 function fitWindow() { zoomStrategy.value = 'fit'; fit(); }
@@ -463,7 +482,11 @@ function invalidateSam() {
 
 async function changeMode(next: CutoutEditorMode) {
   if (next === mode.value || busy.value) return;
+  if (trimPlan.value.error) { error.value = trimPlan.value.error; return; }
+  applying.value = true;
+  try {
   if (mode.value === 'cutout' && hasSelection.value) await applyCutoutToWorkingImage();
+  if (mode.value === 'cutout' && trim.enabled) await applyTrimToWorkingImage();
   if (mode.value === 'cutout') cutoutDraft.value = new Uint8Array(selection.value);
   if (mode.value === 'repair') repairDraft.value = new Uint8Array(selection.value);
   mode.value = next;
@@ -475,6 +498,8 @@ async function changeMode(next: CutoutEditorMode) {
   tool.value = next === 'cutout' ? (samAvailable.value ? 'smart' : 'wand') : next === 'repair' ? 'rect' : 'pan';
   error.value = next === 'cutout' ? '' : localModeError();
   status.value = ''; render();
+  } catch (failure) { error.value = (failure as Error).message; }
+  finally { applying.value = false; }
 }
 
 function beginEdgeChange() { if (!edgeBefore) edgeBefore = captureCheckpoint(); }
@@ -482,6 +507,41 @@ function endEdgeChange() {
   if (edgeBefore && JSON.stringify(edgeBefore.settings) !== JSON.stringify(settings)
     && hasSelection.value) { pushHistory(edgeBefore); markChanged(); }
   edgeBefore = undefined;
+}
+
+function beginTrimChange() { if (!trimBefore) trimBefore = captureCheckpoint(); }
+function endTrimChange() {
+  if (trimBefore && JSON.stringify(trimBefore.trim) !== JSON.stringify(trim)) { pushHistory(trimBefore); markChanged(); }
+  trimBefore = undefined;
+}
+function changeTrimMargin(side: 'top' | 'right' | 'bottom' | 'left', event: Event) {
+  beginTrimChange();
+  const raw = (event.target as HTMLInputElement).value;
+  const value = raw === '' ? NaN : Number(raw);
+  if (trim.linked) { trim.top = value; trim.right = value; trim.bottom = value; trim.left = value; }
+  else trim[side] = value;
+}
+function linkTrim() { if (trim.linked) trim.right = trim.bottom = trim.left = trim.top; }
+
+async function applyTrimToWorkingImage() {
+  if (!trim.enabled || !source.value || !trimPlan.value.bounds) return;
+  const bounds = trimPlan.value.bounds;
+  const before = captureCheckpoint();
+  const input = source.value;
+  const output = trimImage(input, bounds);
+  const canvas = document.createElement('canvas'); canvas.width = output.width; canvas.height = output.height;
+  canvas.getContext('2d')!.putImageData(output, 0, 0);
+  const dataUrl = canvas.toDataURL('image/png');
+  source.value = output; labs.value = createLabPixels(output);
+  selection.value = new Uint8Array(output.width * output.height);
+  cutoutDraft.value = new Uint8Array(); repairDraft.value = new Uint8Array(); maskRevision.value++;
+  invalidateSam();
+  if (before) pushHistory(before);
+  operations.value = [...operations.value, { kind: 'trim', dataUrl, left: bounds.left, top: bounds.top,
+    sourcePixelWidth: input.width, sourcePixelHeight: input.height, outputPixelWidth: output.width, outputPixelHeight: output.height }];
+  Object.assign(trim, defaultTrimSettings()); trimBefore = undefined;
+  markChanged(); status.value = '已裁掉多余留白，主体位置和大小保持不变。';
+  await nextTick(); refreshFit(); render();
 }
 
 function pushHistory(checkpoint = captureCheckpoint()) {
@@ -757,20 +817,22 @@ async function save(discardRepair = false) {
   if (!snapshot.value || !source.value || !canSave.value) return;
   if (hasRepairDraft.value && !discardRepair) { pendingRepairSave.value = true; return; }
   pendingRepairSave.value = false;
+  saving.value = true;
+  error.value = '';
+  try {
   if (discardRepair) {
     repairDraft.value = new Uint8Array();
     if (mode.value === 'repair') { selection.value = new Uint8Array(selection.value.length); maskRevision.value++; render(); }
   }
   if (mode.value === 'cutout' && hasSelection.value) await applyCutoutToWorkingImage();
+  if (mode.value === 'cutout' && trim.enabled) await applyTrimToWorkingImage();
   const lastCutout = [...operations.value].reverse().find(operation => operation.kind === 'cutout');
-  saving.value = true;
-  error.value = '';
   status.value = '正在保存全部图像处理结果…';
-  try {
     await props.commit({
       assetId: snapshot.value.assetId,
       dataUrl: currentSourceDataUrl(),
       sourceSignature: snapshot.value.sourceSignature,
+      placementSignature: snapshot.value.placementSignature,
       operations: operations.value.map(cloneOperation),
       maskDataUrl: lastCutout?.kind === 'cutout' ? lastCutout.maskDataUrl : undefined,
       settings: lastCutout?.kind === 'cutout' ? { ...lastCutout.settings } : { ...settings },
@@ -800,7 +862,7 @@ async function closeNow() {
 }
 
 function requestClose() {
-  if (saving.value) return;
+  if (saving.value || applying.value) return;
   if (dirty.value || localBusy.value || samBusy.value) showUnsaved.value = true;
   else void closeNow();
 }
@@ -839,6 +901,7 @@ function keydown(event: KeyboardEvent) {
 }
 
 async function open(next: CutoutEditorSnapshot) {
+  Object.assign(trim, defaultTrimSettings()); trimBefore = undefined;
   previousFocus = document.activeElement as HTMLElement;
   const generation = ++editorGeneration;
   snapshot.value = next; visible.value = true; dirty.value = false; showUnsaved.value = false;
@@ -915,6 +978,11 @@ watch(settings, () => {
   render();
 }, { deep: true });
 watch([compareOriginal, previewResult], () => render());
+watch(trim, () => render(), { deep: true });
+watch(() => trimPlan.value.error, (_next, previous) => {
+  if (previous && error.value === previous) error.value = '';
+});
+watch(displayDimensions, async () => { await nextTick(); refreshFit(); });
 watch([showUnsaved, pendingRepairSave], async ([unsaved, pending]) => {
   await nextTick();
   if (unsaved || pending) dialog.value?.querySelector<HTMLElement>('.cutout-unsaved button')?.focus();
@@ -960,6 +1028,7 @@ defineExpose({ open, close: requestClose });
               <canvas ref="baseCanvas" aria-hidden="true" />
               <canvas ref="resultCanvas" aria-hidden="true" />
               <canvas ref="overlayCanvas" :aria-label="mode === 'repair' ? '局部修复选区画布' : '图像编辑画布'" @pointerdown.stop="pointerDown" />
+              <div v-if="trimPlan.bounds && !previewResult && !compareOriginal" class="cutout-trim-frame" :style="trimFrameStyle" aria-label="裁剪范围"><span>裁剪范围</span></div>
               <template v-if="mode === 'cutout' && !previewResult && !compareOriginal">
                 <button v-for="(point, index) in points" :key="`${index}-${point.x}-${point.y}`" class="cutout-point" :class="point.label"
                   type="button" :disabled="busy" :style="{ left: `${point.x / dimensions.width * 100}%`, top: `${point.y / dimensions.height * 100}%` }"
@@ -969,7 +1038,7 @@ defineExpose({ open, close: requestClose });
             </div>
           </main>
           <div class="cutout-canvas-footer">
-            <span class="cutout-pixel-size">{{ dimensions.width }} × {{ dimensions.height }} px</span>
+            <span class="cutout-pixel-size">{{ displayDimensions.width }} × {{ displayDimensions.height }} px</span>
             <div class="cutout-preview-controls">
               <button type="button" @click="fitWindow">适应</button>
               <button type="button" @click="setZoom(1)">100%</button>
@@ -1036,6 +1105,20 @@ defineExpose({ open, close: requestClose });
                 </template>
               </fieldset>
             </details>
+            <details v-if="mode === 'cutout'" class="cutout-edge-details cutout-trim-details"><summary>边缘切除</summary>
+              <fieldset :disabled="busy" @pointerdown="beginTrimChange" @keydown="beginTrimChange" @change="endTrimChange" @focusout="endTrimChange">
+                <label class="cutout-check"><input v-model="trim.enabled" type="checkbox" />裁掉多余透明留白</label>
+                <template v-if="trim.enabled">
+                  <label class="cutout-check"><input v-model="trim.linked" type="checkbox" @change="linkTrim" />同步四边</label>
+                  <div class="cutout-trim-inputs">
+                    <label v-for="side in (['top', 'bottom', 'left', 'right'] as const)" :key="side">{{ { top: '上', bottom: '下', left: '左', right: '右' }[side] }}<span><input :aria-label="`${{ top: '上', bottom: '下', left: '左', right: '右' }[side]}保留间距`" :value="Number.isFinite(trim[side]) ? trim[side] : ''" type="number" min="0" max="4096" step="1" @input="changeTrimMargin(side, $event)" /> px</span></label>
+                  </div>
+                  <p class="cutout-field-note">主体四周保留透明间距，不恢复原背景。主体在设计图中的位置和大小不变。</p>
+                  <dl class="cutout-dimensions"><div><dt>裁剪前</dt><dd>{{ dimensions.width }} × {{ dimensions.height }}</dd></div><div><dt>裁剪后</dt><dd>{{ trimPlan.bounds ? `${trimPlan.bounds.width} × ${trimPlan.bounds.height}` : '—' }}</dd></div></dl>
+                  <p v-if="trimPlan.error" class="cutout-error" role="alert">{{ trimPlan.error }}</p>
+                </template>
+              </fieldset>
+            </details>
             <fieldset v-if="mode === 'upscale'" :disabled="busy"><legend>放大倍率</legend>
               <div class="cutout-scale-options">
                 <button v-for="scale in ([2, 4] as const)" :key="scale" type="button" :class="{ active: upscaleScale === scale }" :aria-pressed="upscaleScale === scale" @click="upscaleScale = scale">{{ scale }}× <span>{{ recommendedUpscaleScale === scale ? '推荐' : '更大尺寸' }}</span></button>
@@ -1048,13 +1131,13 @@ defineExpose({ open, close: requestClose });
           </div>
           <div class="cutout-mode-action">
             <div v-if="busy" class="cutout-inline-status" role="status" aria-live="polite"><span class="cutout-spinner" aria-hidden="true" />{{ status || '正在处理…' }}<button v-if="localBusy" type="button" @click="cancelLocalTask">取消处理</button></div>
-            <template v-else-if="mode === 'cutout'"><strong>{{ hasSelection ? '选区已就绪' : '先选择要保留的主体' }}</strong><p>{{ hasSelection ? '可直接保存，或切换功能继续处理。' : '使用上方工具在图片上建立选区。' }}</p><button type="button" :disabled="!hasSelection" @click="previewResult = !previewResult">{{ previewResult ? '继续调整选区' : '预览抠图结果' }}</button></template>
+            <template v-else-if="mode === 'cutout'"><strong>{{ trim.enabled ? '边缘切除预览' : hasSelection ? '选区已就绪' : '先选择要保留的主体' }}</strong><p>{{ hasSelection || trim.enabled ? '可直接保存，或切换功能继续处理。' : '使用上方工具在图片上建立选区。' }}</p><button type="button" :disabled="(!hasSelection && !trim.enabled) || !!trimPlan.error" @click="previewResult = !previewResult">{{ previewResult ? '继续调整选区' : '预览抠图结果' }}</button></template>
             <template v-else><p>{{ !localHealthChecked ? '正在检查本地模型…' : !localAvailable ? '本地模型不可用，请检查安装环境。' : mode === 'repair' && !hasSelection ? '先框选或涂抹要移除的区域。' : '处理后可继续编辑，最后统一保存。' }}</p><button class="primary" type="button" :disabled="!localAvailable || (mode === 'repair' && !hasSelection)" @click="mode === 'repair' ? runLocalRepair() : runUpscale()">{{ mode === 'repair' ? '开始修复' : '开始高清化' }}</button></template>
           </div>
         </aside>
       </div>
       <footer class="cutout-editor-footer" :inert="showUnsaved || pendingRepairSave">
-        <span class="cutout-save-state" role="status">{{ busy ? (saving ? '正在保存…' : '正在处理，可打开工具面板查看状态') : operations.length ? `已有 ${operations.length} 项处理 · 未保存` : mode === 'cutout' && hasSelection ? '抠图预览 · 未保存' : hasRepairDraft ? '修复选区待处理' : '尚未修改图片' }}</span>
+        <span class="cutout-save-state" role="status">{{ busy ? (saving ? '正在保存…' : '正在处理，可打开工具面板查看状态') : operations.length ? `已有 ${operations.length} 项处理 · 未保存` : mode === 'cutout' && trim.enabled ? '边缘切除预览 · 未保存' : mode === 'cutout' && hasSelection ? '抠图预览 · 未保存' : hasRepairDraft ? '修复选区待处理' : '尚未修改图片' }}</span>
         <div class="cutout-save-actions">
           <button class="primary" type="button" :disabled="!canSave" :title="canSave ? '保存所有处理结果并关闭' : busy ? '请等待当前处理完成' : '完成抠图选区或图像处理后即可保存'" @click="save()">{{ saving ? '保存中…' : '保存到切图' }}</button>
         </div>

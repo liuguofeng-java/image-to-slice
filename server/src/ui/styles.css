@@ -3791,6 +3791,11 @@ select {
 .cutout-candidate-grid img { display: block; width: 100%; height: 48px; object-fit: contain; background: var(--bg); border-radius: 4px; margin-bottom: 5px; }
 .cutout-edge-details { border-top: 1px solid var(--line); margin-top: 20px; padding-top: 14px; }
 .cutout-edge-details summary { cursor: pointer; }
+.cutout-trim-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+.cutout-editor-settings .cutout-trim-inputs label { display: flex; justify-content: space-between; margin: 4px 0; gap: 6px; }
+.cutout-trim-inputs input { width: 64px; min-height: 34px; padding: 6px; border: 1px solid var(--line-strong); border-radius: 7px; color: var(--ink); background: var(--panel); font-variant-numeric: tabular-nums; }
+.cutout-trim-frame { position: absolute; pointer-events: none; border: 1px dashed #2764a5; outline: 1px solid #fff; box-sizing: border-box; z-index: 4; }
+.cutout-trim-frame span { position: absolute; top: -23px; left: 0; white-space: nowrap; padding: 2px 5px; background: var(--panel); color: #2764a5; font-size: 11px; border-radius: 3px; }
 .cutout-scale-options { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .cutout-scale-options button { min-height: 78px; font-size: 22px; }
 .cutout-scale-options span { display: block; font-size: 12px; color: var(--accent-weak); margin-top: 4px; font-weight: 400; }

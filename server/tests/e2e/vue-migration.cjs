@@ -8,6 +8,66 @@ const { chromium } = require("playwright");
 const root = path.resolve(__dirname, "../..");
 const mime = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
 
+test('legacy trimmed workspace restores the subject position through the real toolbar and reload', async () => {
+  const sharp = require('sharp');
+  const rgba = Buffer.alloc(221 * 78 * 4);
+  for (let y = 10; y < 67; y++) for (let x = 11; x < 195; x++) rgba.set([20, 80, 30, 255], (y * 221 + x) * 4);
+  const original = await sharp(rgba, { raw: { width: 221, height: 78, channels: 4 } }).png().toBuffer();
+  const cropped = await sharp(original).extract({ left: 5, top: 4, width: 196, height: 69 }).png().toBuffer();
+  const background = await sharp({ create: { width: 1024, height: 1536, channels: 4, background: '#fff' } }).composite([{ input: original, left: 453, top: 1146 }]).png().toBuffer();
+  const url = bytes => `data:image/png;base64,${bytes.toString('base64')}`;
+  const asset = { id: 'legacy-trim', name: 'slice_01', contentType: 'image', dataUrl: url(cropped), trimmed: true,
+    transparent: true, aiTransparent: true, aiTransparentDataUrl: url(cropped),
+    initialPlacement: { x: 453, y: 1146 }, placement: { x: 453, y: 1146, width: 196, height: 69 },
+    imageProcessingRestoreState: { dataUrl: url(original), geometryState: { placement: { x: 453, y: 1146, width: 221, height: 78 } } } };
+  let draft = { version: 1, width: 1024, height: 1536, activeResultIndex: 0, activeSliceId: asset.id,
+    manifest: { screen: { width: 1024, height: 1536 }, assets: [], resultImages: [{ id: 'fixture', dataUrl: url(background), width: 1024, height: 1536, sliceManifest: { assets: [asset] } }] } };
+  const server = http.createServer((request, response) => {
+    const relative = request.url === '/' ? 'figma-sim.html' : decodeURIComponent(request.url.slice(1).split('?')[0]);
+    const file = path.resolve(root, relative);
+    if (!file.startsWith(root) || !fs.existsSync(file)) { response.writeHead(404).end(); return; }
+    response.setHeader('content-type', mime[path.extname(file)] || 'application/octet-stream');
+    response.end(fs.readFileSync(file));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    let saved;
+    await page.route('http://127.0.0.1:18787/**', route => {
+      const pathname = new URL(route.request().url()).pathname;
+      let body = { ok: true };
+      if (pathname === '/api/workspace-draft') {
+        if (route.request().method() === 'POST') {
+          saved = route.request().postDataJSON().draft; draft = saved; body = { ok: true, draftId: 'fixture' };
+        } else body = { draft, draftId: 'fixture', restorePreference: 'restore', recordCount: 1 };
+      }
+      return route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
+    });
+    await page.goto(`http://127.0.0.1:${server.address().port}/figma-sim.html`);
+    let frame = page.frames().find(item => item !== page.mainFrame());
+    const restore = () => frame.locator('[data-slice-toolbar-action="restore-position"]');
+    await restore().waitFor();
+    assert.equal(await restore().isEnabled(), true, 'old restored coordinates must be recognized as displaced');
+    await restore().click();
+    await frame.waitForFunction(() => document.querySelector('[data-slice-toolbar-action="restore-position"]')?.disabled === true);
+    await page.waitForResponse(response => response.url().endsWith('/api/workspace-draft') && response.request().method() === 'POST');
+    assert.deepEqual(saved.manifest.resultImages[0].sliceManifest.assets[0].placement, { x: 458, y: 1150, width: 196, height: 69 });
+    assert.equal(saved.manifest.resultImages[0].sliceManifest.assets[0].dataUrl, asset.dataUrl);
+    const geometry = await frame.locator('.slice-cutout.processed').evaluate(el => {
+      const base = document.querySelector('.result-canvas > img').getBoundingClientRect();
+      const box = el.getBoundingClientRect();
+      return { x: (box.left - base.left) * 1024 / base.width, y: (box.top - base.top) * 1536 / base.height };
+    });
+    assert.ok(Math.abs(geometry.x - 458) < .1 && Math.abs(geometry.y - 1150) < .1);
+    await page.reload(); frame = page.frames().find(item => item !== page.mainFrame());
+    await restore().waitFor();
+    assert.equal(await restore().isDisabled(), true, 'reloading must not apply the offset twice');
+  } finally {
+    await browser.close(); await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test("built plugin exposes the Vue smart cutout editor bridge", async () => {
   const server = http.createServer((request, response) => {
     const relative = request.url === "/" ? "figma-sim.html" : decodeURIComponent(request.url.slice(1).split("?")[0]);
@@ -168,7 +228,7 @@ test("built plugin exposes the Vue smart cutout editor bridge", async () => {
     // Each edge change is one undo step; softness survives undo/redo.
     await frame.evaluate(() => window.__openEditor('cutout'));
     await button('画笔').click(); await draw();
-    await frame.locator('.cutout-edge-details summary').click();
+    await frame.locator('.cutout-edge-details summary').filter({ hasText: '边缘优化' }).click();
     const feather = frame.getByRole('slider', { name: '羽化', exact: true });
     await feather.focus(); await feather.press('ArrowRight');
     assert.equal(await feather.inputValue(), '2');
@@ -192,6 +252,79 @@ test("built plugin exposes the Vue smart cutout editor bridge", async () => {
     await button('继续编辑').focus(); await page.keyboard.press('Shift+Tab');
     assert.equal(await button('放弃并关闭').evaluate(el => document.activeElement === el), true);
     await button('放弃并关闭').click();
+    // Trim existing alpha content without requiring a fresh selection.
+    await frame.evaluate(() => {
+      const canvas = document.createElement('canvas'); canvas.width = 100; canvas.height = 60;
+      const ctx = canvas.getContext('2d'); ctx.fillStyle = '#276329'; ctx.fillRect(20, 10, 50, 30);
+      window.__trimFixture = canvas.toDataURL();
+      window.__openTrim = () => window.__cutoutE2e.open({ assetId: 'trim-test', name: '边缘切除测试', contentType: 'image', dataUrl: window.__trimFixture, openMode: 'cutout' });
+    });
+    await frame.evaluate(() => window.__openTrim());
+    await frame.locator('.cutout-trim-details summary').click();
+    await frame.getByRole('checkbox', { name: '裁掉多余透明留白' }).check();
+    for (const [side, value] of [['上', '1'], ['下', '2'], ['左', '3'], ['右', '4']]) {
+      await frame.getByRole('spinbutton', { name: side + '保留间距' }).fill(value);
+      await frame.getByRole('spinbutton', { name: side + '保留间距' }).press('Tab');
+    }
+    await button('预览抠图结果').click();
+    const trimPreview = await frame.locator('.cutout-editor-stage canvas').nth(1).evaluate(canvas => ({ width: canvas.width, height: canvas.height, url: canvas.toDataURL() }));
+    assert.equal(trimPreview.width, 57); assert.equal(trimPreview.height, 33);
+    await button('撤销').click();
+    assert.equal(await frame.getByRole('spinbutton', { name: '右保留间距' }).inputValue(), '0');
+    await button('重做').click();
+    await button('保存到切图').click();
+    await frame.locator('.cutout-editor').waitFor({ state: 'hidden' });
+    const trimCommit = await frame.evaluate(() => window.__cutoutCommits.at(-1));
+    assert.deepEqual(trimCommit.operations.map(op => op.kind), ['trim']);
+    assert.equal(trimCommit.operations[0].left, 17); assert.equal(trimCommit.operations[0].top, 9);
+    assert.equal(trimCommit.dataUrl, trimPreview.url, '预览和实际裁剪输出一致');
+    await frame.evaluate(() => window.__openTrim());
+    await frame.locator('.cutout-trim-details summary').click();
+    assert.equal(await frame.getByRole('checkbox', { name: '裁掉多余透明留白' }).isChecked(), false);
+    await frame.getByRole('checkbox', { name: '裁掉多余透明留白' }).check();
+    await frame.getByRole('spinbutton', { name: '上保留间距' }).fill('25');
+    await frame.getByRole('checkbox', { name: '同步四边' }).check();
+    assert.equal(await frame.getByRole('spinbutton', { name: '右保留间距' }).inputValue(), '25');
+    await frame.getByRole('spinbutton', { name: '左保留间距' }).fill('4096');
+    await frame.getByRole('alert').filter({ hasText: '输出尺寸过大' }).waitFor();
+    assert.equal(await button('保存到切图').isDisabled(), true);
+    await button('高清化').click(); assert.equal(await button('智能抠图').getAttribute('aria-pressed'), 'true');
+    await frame.getByRole('spinbutton', { name: '左保留间距' }).fill('25');
+    await button('高清化').click(); await button('开始高清化').click();
+    await frame.getByText('高清化完成：', { exact: false }).waitFor();
+    await button('保存到切图').click();
+    await frame.locator('.cutout-editor').waitFor({ state: 'hidden' });
+    assert.deepEqual(await frame.evaluate(() => window.__cutoutCommits.at(-1).operations.map(op => op.kind)), ['trim', 'upscale']);
+    await frame.evaluate(() => window.__openTrim());
+    await button('魔棒').click();
+    await frame.locator('.cutout-editor-stage canvas').last().click({ position: { x: 65, y: 45 } });
+    await frame.locator('.cutout-trim-details summary').click();
+    await frame.getByRole('checkbox', { name: '裁掉多余透明留白' }).check();
+    await button('预览抠图结果').click();
+    const combinedPreview = await frame.locator('.cutout-editor-stage canvas').nth(1).evaluate(canvas => canvas.toDataURL());
+    await frame.evaluate(() => { window.__failSave = true; });
+    await button('保存到切图').click(); await frame.getByRole('alert').filter({ hasText: '模拟保存失败' }).waitFor();
+    assert.equal(await frame.getByRole('checkbox', { name: '裁掉多余透明留白' }).isChecked(), false);
+    await frame.evaluate(() => { window.__failSave = false; });
+    await button('保存到切图').click(); await frame.locator('.cutout-editor').waitFor({ state: 'hidden' });
+    const combined = await frame.evaluate(() => window.__cutoutCommits.at(-1));
+    assert.deepEqual(combined.operations.map(op => op.kind), ['cutout', 'trim']);
+    assert.equal(combined.dataUrl, combinedPreview);
+    // Trim controls remain usable in the compact tool drawer.
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      await frame.evaluate(() => window.__openTrim());
+      if (width < 960) await button('工具与参数').click();
+      await frame.locator('.cutout-trim-details summary').click();
+      await frame.getByRole('checkbox', { name: '裁掉多余透明留白' }).check();
+      await frame.getByRole('spinbutton', { name: '上保留间距' }).fill('4');
+      await frame.getByRole('checkbox', { name: '同步四边' }).check();
+      await frame.locator('.cutout-trim-details').scrollIntoViewIfNeeded();
+      await page.screenshot({ path: path.join(process.env.TEMP || '/tmp', `image-editor-trim-${width}.png`) });
+      const controls = frame.locator('.cutout-trim-inputs');
+      assert.equal(await controls.evaluate(el => el.scrollWidth <= el.clientWidth), true);
+      await button('关闭图像处理').click(); await button('放弃并关闭').click();
+    }
     // Verify layout and keep screenshots outside the repository.
     for (const [width, height] of [[1920,1080], [1280,800], [800,600], [390,844]]) {
       await page.setViewportSize({ width, height });

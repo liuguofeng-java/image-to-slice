@@ -2735,12 +2735,7 @@
         }
         recordSliceHistory();
         for (const asset of changedAssets) {
-          const initial = asset.initialPlacement;
-          asset.placement = normalizeSlicePlacement({
-            ...asset.placement,
-            x: initial.x,
-            y: initial.y
-          }, currentManifest?.screen);
+          restoreSliceInitialPosition(asset, placement => normalizeSlicePlacement(placement, currentManifest?.screen));
           reconcileAutomaticSliceParents(activeImage.sliceManifest?.assets || []);
           if (shouldRefreshSliceCropAfterPositionRestore(asset)) {
             await updateSliceAssetCrop(asset.id);
@@ -3326,7 +3321,7 @@
           const hasProcessedPreview = Boolean(
             previewDataUrl
             && (asset.transparent || asset.aiTransparent || asset.svgData || asset.aiRedrawn
-              || asset.localInpaintMethod || asset.upscaleMethod)
+              || asset.localInpaintMethod || asset.upscaleMethod || asset.trimmed)
           );
           return `
             <div class="slice-cutout${hasProcessedPreview ? " processed" : ""}" style="
@@ -4997,6 +4992,7 @@
         }
         recordSliceHistory();
         restoreSliceTransparencyState(asset);
+        reconcileAutomaticSliceParents(getActiveResultImage()?.sliceManifest?.assets || []);
         activeSliceId = asset.id;
         refreshSliceVisibility();
         renderCutModules(currentManifest);
@@ -5107,6 +5103,7 @@
       }
 
       function queuePreparedSmartCutout(context) {
+        context.placementSignature ||= slicePlacementSignature(getActiveSliceAsset(context.assetId)?.placement);
         if (activeSmartCutoutContext) {
           const existingIndex = smartCutoutQueue.findIndex((entry) => entry.assetId === context.assetId);
           if (existingIndex >= 0) smartCutoutQueue.splice(existingIndex, 1, context);
@@ -5138,6 +5135,7 @@
           outputPixelHeight: context.outputPixelHeight,
           upscaleScale: context.upscaleScale,
           sourceSignature: context.sourceSignature,
+          placementSignature: context.placementSignature,
           processingRestore: context.processingRestore
         })).catch((error) => {
           activeSmartCutoutContext = null;
@@ -5155,15 +5153,23 @@
         if (result.sourceSignature && createLocalSourceSignature(asset.dataUrl) !== result.sourceSignature) {
           throw new Error(`“${asset.name}”在编辑期间已被其他操作修改，请关闭后重新打开。`);
         }
+        if (result.placementSignature && result.placementSignature !== slicePlacementSignature(asset.placement)) {
+          throw new Error(`“${asset.name}”的切图框在编辑期间已被修改，请关闭后重新打开。`);
+        }
         const context = activeSmartCutoutContext?.assetId === result.assetId
           ? activeSmartCutoutContext
           : null;
         const previousAsset = structuredClone(asset);
+        const previousParents = (getActiveResultImage()?.sliceManifest?.assets || []).map(entry => ({ asset: entry, parentId: entry.parentId }));
         const previousUndoStack = sliceUndoStack.slice();
         const previousRedoStack = sliceRedoStack.slice();
         recordSliceHistory();
         try {
           for (const operation of result.operations || []) {
+            if (operation.kind === "trim") {
+              applySliceTrimResult(asset, operation);
+              continue;
+            }
             if (operation.kind === "restore") {
               if (operation.scope === "image-processing") restoreSliceImageProcessingState(asset);
               else restoreSliceTransparencyState(asset);
@@ -5191,6 +5197,12 @@
             });
           }
           asset.dataUrl = result.dataUrl;
+          if (asset.transparent) asset.transparentDataUrl = result.dataUrl;
+          if (asset.aiTransparent) { asset.aiTransparentDataUrl = result.dataUrl; asset.aiTransparentPlacement = { ...asset.placement }; }
+          if ((result.operations || []).some(operation => operation.kind === 'trim' || operation.kind === 'restore')) {
+            const allAssets = getActiveResultImage()?.sliceManifest?.assets || [];
+            reconcileAutomaticSliceParents(allAssets);
+          }
           activeSliceId = asset.id;
           refreshSliceVisibility();
           renderCutModules(currentManifest);
@@ -5200,12 +5212,14 @@
             cutout: "智能抠图",
             inpaint: "局部修复",
             upscale: "高清化",
-            restore: "图片恢复"
+            restore: "图片恢复",
+            trim: "边缘切除"
           })[operation.kind]))];
           setStatus(`已保存${labels.length ? ` ${labels.join("、")}` : "图像处理"}：${asset.name}`, "success");
         } catch (error) {
           Object.keys(asset).forEach((key) => delete asset[key]);
           Object.assign(asset, previousAsset);
+          previousParents.forEach(entry => { entry.asset.parentId = entry.parentId; });
           sliceUndoStack.splice(0, sliceUndoStack.length, ...previousUndoStack);
           sliceRedoStack.splice(0, sliceRedoStack.length, ...previousRedoStack);
           refreshSliceVisibility();
@@ -8273,6 +8287,23 @@
             draft.manifest?.screen?.height
           );
           currentManifest = structuredClone(draft.manifest);
+          for (const image of currentManifest.resultImages || []) {
+            for (const asset of image.sliceManifest?.assets || []) {
+              try {
+                await recoverLegacySliceTrimPosition(asset, async dataUrl => {
+                  const image = await loadImageElement(dataUrl);
+                  if (image.naturalWidth * image.naturalHeight > 32_000_000) throw new Error('旧裁边图片过大，跳过自动校正');
+                  const canvas = document.createElement('canvas');
+                  canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+                  const context = canvas.getContext('2d');
+                  context.drawImage(image, 0, 0);
+                  return context.getImageData(0, 0, canvas.width, canvas.height);
+                });
+              } catch (error) {
+                console.warn('Unable to verify legacy trim position', asset.id, error);
+              }
+            }
+          }
           currentMode = draft.currentMode || "text-to-image";
           currentRatio = draft.currentRatio || "9:16";
           currentStyle = draft.currentStyle || "";

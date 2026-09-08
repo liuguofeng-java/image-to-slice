@@ -33,6 +33,7 @@ export interface CutoutEditorSnapshot {
   outputPixelHeight?: number | null;
   upscaleScale?: number | null;
   sourceSignature?: string;
+  placementSignature?: string;
   processingRestore?: {
     dataUrl: string;
     scope: 'image-processing' | 'transparency';
@@ -40,6 +41,16 @@ export interface CutoutEditorSnapshot {
 }
 
 export type ImageEditorOperation =
+  | {
+      kind: 'trim';
+      dataUrl: string;
+      sourcePixelWidth: number;
+      sourcePixelHeight: number;
+      left: number;
+      top: number;
+      outputPixelWidth: number;
+      outputPixelHeight: number;
+    }
   | {
       kind: 'cutout';
       dataUrl: string;
@@ -74,6 +85,7 @@ export interface ImageEditorSaveResult {
   assetId: string;
   dataUrl: string;
   sourceSignature?: string;
+  placementSignature?: string;
   operations: ImageEditorOperation[];
   maskDataUrl?: string;
   settings: CutoutSettings;

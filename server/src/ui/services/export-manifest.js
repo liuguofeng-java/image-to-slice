@@ -28,6 +28,7 @@ function buildSliceExportManifest({
       ...(isText ? { text: { ...(asset.text || {}) } } : {}),
       transparent: Boolean(asset.transparent),
       aiTransparent: Boolean(asset.aiTransparent),
+      ...(asset.trimmed ? { trimmed: true, sourcePixelWidth: asset.sourcePixelWidth, sourcePixelHeight: asset.sourcePixelHeight, outputPixelWidth: asset.outputPixelWidth, outputPixelHeight: asset.outputPixelHeight } : {}),
       ...(asset.cutoutMethod ? {
         cutoutMethod: asset.cutoutMethod,
         cutoutMaskDataUrl: asset.cutoutMaskDataUrl || null,
