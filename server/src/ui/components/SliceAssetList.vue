@@ -87,6 +87,7 @@ onBeforeUnmount(stopPointerDrag);
     <img v-else class="cut-thumb" :src="row.dataUrl" :alt="row.name" :draggable="false" :style="{ borderRadius: row.radius }" />
     <div class="cut-meta">
       <span class="cut-name">{{ row.number }}. {{ row.name }}<span class="cut-type-badge" :class="row.contentType">{{ labels[row.contentType] }}</span><span v-if="row.childCount" class="cut-parent-badge">父级 · {{ row.childCount }}</span></span>
+      <span v-if="row.regenerateMarked" class="cut-regeneration-badge">待重新生成</span>
       <span class="cut-size">{{ row.description }}</span>
     </div>
     <div v-if="row.processing" class="cut-ai-status" role="status" aria-live="polite">

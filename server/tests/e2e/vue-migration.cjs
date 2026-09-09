@@ -4,6 +4,7 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const { chromium } = require("playwright");
+require('./regeneration.cjs');
 
 const root = path.resolve(__dirname, "../..");
 const mime = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };

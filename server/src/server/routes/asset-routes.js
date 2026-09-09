@@ -17,7 +17,7 @@ function createAssetRoutes({
 
     if (request.method === "POST" && request.url === "/api/assets/ai-redraw") {
       const payload = await readJson(request);
-      const task = payload.preserveBackground === true && payload.maskDataUrl
+      const task = payload.operation !== "regenerate" && payload.preserveBackground === true && payload.maskDataUrl
         ? "inpaint"
         : "generation";
       const context = getTaskRequestContext(task);

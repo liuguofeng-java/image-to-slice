@@ -208,7 +208,7 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (request.method === "GET" && request.url === "/health") {
-      sendJson(response, 200, { ok: true });
+      sendJson(response, 200, { ok: true, capabilities: { regenerate: 1 } });
       return;
     }
 
@@ -532,6 +532,11 @@ async function generateTransparentAsset(payload, requestContext) {
 }
 
 async function redrawAsset(payload, requestContext) {
+  if (payload.operation === "regenerate") {
+    return require("./src/server/services/ai-regenerate").regenerateAsset(payload, requestContext, {
+      normalizeImageResponse, toImageSize: toOpenAIImageSize
+    });
+  }
   if (payload.operation === "remove-background") {
     return cutoutAsset(payload, requestContext, { normalizeImageResponse, updateProgress: updateAiProgress });
   }

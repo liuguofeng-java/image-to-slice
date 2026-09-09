@@ -18,6 +18,7 @@ const DEFAULT_VENDOR_SCRIPT_PATHS = [
 const DEFAULT_APP_SCRIPT_PATHS = [
   // Shared UI helpers and pure business utilities.
   path.join("src", "core", "ai-image-dimensions.js"),
+  path.join("src", "core", "regeneration.js"),
   path.join("src", "core", "slice-asset-name.js"),
   path.join("src", "ui", "services", "app-utils.js"),
   path.join("src", "ui", "services", "canvas-viewport.js"),
@@ -40,6 +41,7 @@ const DEFAULT_APP_SCRIPT_PATHS = [
 
   // Local UI state helpers.
   path.join("src", "ui", "state", "slice-ai-state.js"),
+  path.join("src", "ui", "state", "slice-regeneration.js"),
   path.join("src", "ui", "state", "composite-slice-layers.js"),
   path.join("src", "ui", "state", "background-decomposition.js"),
   path.join("src", "ui", "state", "html-preview-cache.js"),

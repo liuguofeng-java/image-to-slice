@@ -48,6 +48,7 @@ function buildSliceExportManifest({
         outputPixelHeight: Number(asset.outputPixelHeight) || null
       } : {}),
       aiRedrawn: Boolean(asset.aiRedrawn),
+      ...(asset.regeneration ? { regeneration: { ...asset.regeneration }, sourcePixelWidth: asset.sourcePixelWidth, sourcePixelHeight: asset.sourcePixelHeight, outputPixelWidth: asset.outputPixelWidth, outputPixelHeight: asset.outputPixelHeight } : {}),
       hasOriginalRaster: Boolean(asset.originalDataUrl),
       selectedImageIndex: imageIndex,
       radius: getSliceRadius(asset),

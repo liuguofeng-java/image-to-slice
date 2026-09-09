@@ -273,9 +273,14 @@
       const localImageTaskProgress = new Map();
       let sliceListView = null;
       let sliceCutoutEditorView = null;
+      let regenerationSession = null;
+      let regenerationOpening = false;
+      const regenerateSlicesButton = document.getElementById("regenerateSlices");
+      regenerateSlicesButton.addEventListener("click", openRegenerationReview);
       let activeSmartCutoutContext = null;
       const smartCutoutQueue = [];
       window.addEventListener("pagehide", () => {
+        disposeRegenerationReview();
         sliceListView?.dispose();
         sliceListView = null;
         sliceCutoutEditorView?.dispose();
@@ -1875,6 +1880,10 @@
           <button type="button" data-slice-toolbar-action="restore-position" aria-label="还原位置" data-tooltip="还原位置" title="还原位置"${isAnyProcessing || !canRestorePosition ? " disabled" : ""}>还原位置</button>
           ${asset.aiProcessing ? '<button class="danger" type="button" data-slice-toolbar-action="cancel" aria-label="取消当前任务" data-tooltip="取消当前任务" title="取消当前任务">取消当前任务</button>' : ""}
         `;
+        const markable = selectedAssets.filter(canMarkRegeneration);
+        const allMarked = markable.length > 0 && markable.every(entry => entry.regenerateMarked);
+        const markLabel = allMarked ? "取消重新生成标记" : "标记重新生成";
+        selectedSliceActions.innerHTML += `<button type="button" data-slice-toolbar-action="mark-regenerate" aria-pressed="${allMarked}" aria-label="${markLabel}" data-tooltip="${markable.length ? markLabel : '仅未运行任务的图片类型可标记'}" title="${markable.length ? markLabel : '仅未运行任务的图片类型可标记；文字、背景和未分类不支持'}"${markable.length ? "" : " disabled"}>${markLabel}</button>`;
         selectedSliceActions.hidden = false;
         selectedSliceActions.querySelectorAll("[data-slice-toolbar-action]").forEach((button) => {
           button.addEventListener("click", async () => {
@@ -1892,6 +1901,10 @@
       }
 
       function renderCutModules(manifest, animateReorder = false) {
+        if (regenerationSession && !isRegenerationWorkspaceCurrent(regenerationSession)) disposeRegenerationReview();
+        const markedCount = (getActiveResultImage()?.sliceManifest?.assets || []).filter(entry => entry.contentType === "image" && entry.regenerateMarked).length;
+        regenerateSlicesButton.textContent = `AI重新生成 (${markedCount})`;
+        regenerateSlicesButton.disabled = !markedCount || regenerationOpening || Boolean(regenerationSession);
         if (!manifest?.resultImages?.length) {
           renderEmptyCutModules();
           return;
@@ -1942,6 +1955,7 @@
               processingLabel: asset.aiProcessingLabel || "", auditFailed: Boolean(asset.auditFailed),
               aiTransparent: Boolean(asset.aiTransparent), aiTransparencyCurrent,
               locallyRepaired: Boolean(asset.localInpaintMethod),
+              regenerateMarked: Boolean(asset.regenerateMarked),
               upscaled: Boolean(asset.upscaleMethod)
             };
           })
@@ -1950,6 +1964,16 @@
       }
 
       async function handleSliceListAction(event) {
+        if (event.type === "mark-regenerate") {
+          const assets = getSelectedSliceAssets().filter(canMarkRegeneration);
+          if (!assets.length) return;
+          const marked = !assets.every(entry => entry.regenerateMarked);
+          recordSliceHistory();
+          assets.forEach(entry => { entry.regenerateMarked = marked; });
+          renderCutModules(currentManifest);
+          scheduleWorkspaceDraftSave();
+          return;
+        }
         if (event.type === "reorder") {
           reorderSliceAsset(event.sourceId, event.targetId, event.before);
           return;
@@ -4953,6 +4977,182 @@
           onClose: handleSliceCutoutEditorClosed
         });
         return sliceCutoutEditorView;
+      }
+
+      function isRegenerationWorkspaceCurrent(session) {
+        return currentManifest === session.manifest && getActiveResultImage() === session.image
+          && activeWorkspaceDraftId === session.draftId;
+      }
+
+      function regenerationAssetSignature(asset, image) {
+        const children = image.sliceManifest.assets;
+        const signature = [getDirectChildRemovalSignature(asset, children), children.filter(child => child.parentId === asset.id && !child.hidden && child.contentType !== 'unclassified').map(child => [child.id, child.contentType, child.dataUrl, child.text])];
+        return regenerationSignature(asset, signature);
+      }
+
+      function syncRegenerationReview(session) {
+        if (regenerationSession !== session) return;
+        session.view?.update({ items: session.items.map(item => ({ ...item })), running: session.running,
+          saving: session.saving, confirmed: session.confirmed, error: session.error,
+          provider: `${session.provider.name} · ${session.provider.model} · ${session.provider.baseUrl}` });
+      }
+
+      function cancelRegenerationBatch(session) {
+        session.cancelled = true;
+        if (session.request) {
+          session.request.controller.abort();
+          fetchBackend(`/api/progress/${encodeURIComponent(session.request.progressId)}/cancel`, { method: 'POST' }).catch(() => {});
+        }
+        session.items.filter(item => item.status === 'pending').forEach(item => { item.status = 'cancelled'; });
+        syncRegenerationReview(session);
+      }
+
+      function disposeRegenerationReview() {
+        const session = regenerationSession;
+        if (!session) return;
+        regenerationSession = null;
+        cancelRegenerationBatch(session);
+        session.view?.dispose(); session.host.remove();
+        regenerateSlicesButton.disabled = !(getActiveResultImage()?.sliceManifest?.assets || []).some(entry => entry.contentType === 'image' && entry.regenerateMarked);
+        if (isRegenerationWorkspaceCurrent(session)) {
+          (regenerateSlicesButton.disabled ? document.querySelector('[data-slice-tool="select"]') : regenerateSlicesButton)?.focus();
+        }
+      }
+
+      async function openRegenerationReview() {
+        if (regenerationOpening || regenerationSession) return;
+        regenerationOpening = true; regenerateSlicesButton.disabled = true;
+        const manifest = currentManifest, image = getActiveResultImage();
+        try {
+          await flushWorkspaceDraftChanges();
+          if (manifest !== currentManifest || image !== getActiveResultImage()) return;
+          const draftId = activeWorkspaceDraftId;
+          await ensureRegenerationSupported(fetchBackend);
+          const response = await fetchBackend('/api/model-configs');
+          const config = normalizeModelConfigPayload(await response.json());
+          const provider = config.modelConfigs.find(entry => entry.id === config.taskRouting.generation);
+          if (!response.ok || !provider?.hasApiKey) throw new Error('请先在设置中配置图片生成 / 修补 API 和密钥。');
+          const items = [];
+          for (const { layer: asset } of buildCompositeSliceDisplayTree(image?.sliceManifest?.assets || [])) {
+            if (asset.contentType !== 'image' || !asset.regenerateMarked) continue;
+            const signature = regenerationAssetSignature(asset, image);
+            const bitmap = await loadImageElement(asset.dataUrl);
+            validateRegenerationDimensions(bitmap.naturalWidth, bitmap.naturalHeight);
+            items.push({ id: asset.id, name: asset.name, dataUrl: asset.dataUrl, width: bitmap.naturalWidth, height: bitmap.naturalHeight,
+              childCount: getDirectChildRemovalRegions(asset, image.sliceManifest.assets).length,
+              signature, status: 'pending' });
+          }
+          if (!items.length) throw new Error('当前设计图没有待重新生成的图片。');
+          const session = { manifest, image, draftId, provider, items, confirmed: false, running: false, saving: false, cancelled: false, error: '', host: document.createElement('div') };
+          if (!isRegenerationWorkspaceCurrent(session)) return;
+          closeSliceSettingsDrawer();
+          document.body.append(session.host);
+          regenerationSession = session;
+          session.view = ImageToSliceVue.mountRegenerationReview(session.host, { items, running: false, saving: false, confirmed: false,
+            provider: `${provider.name} · ${provider.model} · ${provider.baseUrl}` }, action => handleRegenerationAction(session, action));
+        } catch (error) { setStatus(error.message || String(error), 'error'); }
+        finally { regenerationOpening = false; renderCutModules(currentManifest); }
+      }
+
+      function assertRegenerationCurrent(session, item) {
+        if (regenerationSession !== session || !isRegenerationWorkspaceCurrent(session)) throw new Error('工作区已切换，结果不会应用。');
+        const asset = getActiveSliceAsset(item.id);
+        if (!asset || asset.contentType !== 'image' || regenerationAssetSignature(asset, session.image) !== item.signature) {
+          throw new Error('图片、切图框、类型或子级已变化，请关闭并重新生成。');
+        }
+        return asset;
+      }
+
+      async function runRegenerationBatch(session, items) {
+        if (session.running || session.saving) return;
+        session.running = true; session.confirmed = true; session.cancelled = false; session.error = '';
+        syncRegenerationReview(session);
+        try {
+          for (const item of items) {
+            if (session.cancelled || regenerationSession !== session || !isRegenerationWorkspaceCurrent(session)) break;
+            let asset, controller, stopProgress = () => {};
+            try {
+              asset = assertRegenerationCurrent(session, item);
+              if (asset.aiProcessing) throw new Error('该图片有其他任务正在运行，请完成后重试。');
+              item.error = ''; item.status = 'running';
+              const progressId = `regenerate_${Date.now().toString(36)}_${item.id}`;
+              controller = beginSliceAiRequest(asset, progressId);
+              session.request = { controller, progressId };
+              setSliceAiProcessing(asset, '远程重新生成中…', true);
+              stopProgress = startAiProgressPolling(progressId, progress => {
+                if (regenerationSession !== session || session.cancelled) return;
+                updateSliceAiProgress(asset, progress, '远程重新生成');
+                item.progress = asset.aiProcessingLabel; syncRegenerationReview(session);
+              });
+              syncRegenerationReview(session);
+              const result = await requestRegeneration(fetchBackend, { dataUrl: item.dataUrl, name: item.name, width: item.width, height: item.height,
+                excludeRegions: mapRegenerationChildren(asset, getDirectChildRemovalRegions(asset, session.image.sliceManifest.assets), item.width, item.height),
+                expectedProvider: { id: session.provider.id, model: session.provider.model, baseUrl: session.provider.baseUrl }, progressId }, controller.signal);
+              if (controller.signal.aborted || session.cancelled) throw new DOMException('已取消', 'AbortError');
+              assertRegenerationCurrent(session, item);
+              const bitmap = await loadImageElement(result.dataUrl);
+              if (controller.signal.aborted || session.cancelled) throw new DOMException('已取消', 'AbortError');
+              assertRegenerationCurrent(session, item);
+              validateRegenerationDimensions(bitmap.naturalWidth, bitmap.naturalHeight, item.width, item.height);
+              if (result.width !== bitmap.naturalWidth || result.height !== bitmap.naturalHeight) throw new Error(`返回图片尺寸不一致：接口声明 ${result.width} × ${result.height} px，实际图片 ${bitmap.naturalWidth} × ${bitmap.naturalHeight} px。为避免错误裁剪，禁止应用。`);
+              item.result = result; item.status = 'ready';
+            } catch (error) {
+              item.status = error.name === 'AbortError' || session.cancelled ? 'cancelled' : 'failed';
+              item.error = item.status === 'cancelled' ? '已取消；远程服务可能仍已计费。' : error.message || String(error);
+            } finally {
+              stopProgress(); session.request = null;
+              if (asset && controller) {
+                if (isRegenerationWorkspaceCurrent(session)) finalizeSliceAiRequest(asset, controller);
+                else { sliceAiControllers.finish(asset.id, controller); asset.aiProcessing = false; asset.aiProcessingLabel = ''; }
+              }
+              syncRegenerationReview(session);
+            }
+          }
+        } finally {
+          session.running = false;
+          session.items.filter(item => item.status === 'pending').forEach(item => { item.status = 'cancelled'; });
+          syncRegenerationReview(session); renderCutModules(currentManifest);
+        }
+      }
+
+      async function handleRegenerationAction(session, action) {
+        if (session !== regenerationSession || session.saving) return;
+        const item = session.items.find(entry => entry.id === action.id);
+        if (action.type === 'close') {
+          if ((session.running || session.items.some(entry => entry.status === 'ready')) && !window.confirm('关闭将取消剩余任务并放弃尚未应用的生成结果，是否继续？')) return;
+          disposeRegenerationReview(); renderCutModules(currentManifest); return;
+        }
+        if (action.type === 'cancel') { cancelRegenerationBatch(session); return; }
+        if (action.type === 'start' && !session.confirmed) { await runRegenerationBatch(session, session.items); return; }
+        if (action.type === 'retry' && item && ['failed', 'cancelled'].includes(item.status)) {
+          if (window.confirm('重试会重新发送图片至远程服务，可能再次计费。是否继续？')) await runRegenerationBatch(session, [item]);
+          return;
+        }
+        if (action.type === 'discard' && item?.status === 'ready') { delete item.result; item.status = 'discarded'; syncRegenerationReview(session); return; }
+        if (action.type !== 'apply' || session.running || item?.status !== 'ready') return;
+        let asset, previous, undo, redo;
+        try {
+          asset = assertRegenerationCurrent(session, item);
+          if (asset.aiProcessing) throw new Error('该图片有其他任务正在运行，请完成后再应用。');
+          session.saving = true; item.error = ''; syncRegenerationReview(session);
+          // Drain previous writes before creating the transaction's undo entry.
+          await flushWorkspaceDraftChanges();
+          asset = assertRegenerationCurrent(session, item);
+          previous = structuredClone(asset); undo = sliceUndoStack.slice(); redo = sliceRedoStack.slice();
+          recordSliceHistory();
+          sliceCropVersions.set(asset.id, (sliceCropVersions.get(asset.id) || 0) + 1);
+          applyRegenerationResult(asset, item.result, item, item.result.provider);
+          refreshSliceVisibility(); renderCutModules(currentManifest);
+          scheduleWorkspaceDraftSave(); await flushWorkspaceDraftChanges();
+          item.status = 'applied'; delete item.result;
+        } catch (error) {
+          if (previous) {
+            Object.keys(asset).forEach(key => delete asset[key]); Object.assign(asset, previous);
+            sliceUndoStack.splice(0, sliceUndoStack.length, ...undo); sliceRedoStack.splice(0, sliceRedoStack.length, ...redo);
+            refreshSliceVisibility(); renderCutModules(currentManifest);
+          }
+          item.error = error.message || String(error);
+        } finally { session.saving = false; syncRegenerationReview(session); }
       }
 
       function createLocalSourceSignature(dataUrl) {

@@ -2,7 +2,7 @@ function hasProcessedSliceResult(asset) {
   return Boolean(asset?.trimmed || asset?.transparent || asset?.aiTransparent || asset?.aiRedrawn || asset?.localInpaintMethod || asset?.upscaleMethod);
 }
 
-const sliceGeometrySnapshotKeys = ['placement', 'initialPlacement', 'trimPositionVersion', 'sourcePixelWidth', 'sourcePixelHeight', 'outputPixelWidth', 'outputPixelHeight', 'trimmed', 'upscaleMethod', 'upscaleScale', 'transparent', 'aiTransparent', 'transparentDataUrl', 'aiTransparentDataUrl', 'aiTransparentPlacement', 'cutoutMaskDataUrl', 'cutoutSettings', 'cutoutMethod', 'localInpaintMaskDataUrl', 'localInpaintDataUrl', 'localInpaintMethod', 'parentId', 'imageProcessingRestoreState', 'transparencyRestoreState'];
+const sliceGeometrySnapshotKeys = ['placement', 'initialPlacement', 'trimPositionVersion', 'sourcePixelWidth', 'sourcePixelHeight', 'outputPixelWidth', 'outputPixelHeight', 'trimmed', 'upscaleMethod', 'upscaleScale', 'transparent', 'aiTransparent', 'transparentDataUrl', 'aiTransparentDataUrl', 'aiTransparentPlacement', 'cutoutMaskDataUrl', 'cutoutSettings', 'cutoutMethod', 'localInpaintMaskDataUrl', 'localInpaintDataUrl', 'localInpaintMethod', 'parentId', 'imageProcessingRestoreState', 'transparencyRestoreState', 'regeneration'];
 function captureSliceGeometryState(asset) {
   return Object.fromEntries(sliceGeometrySnapshotKeys.map(key => [key, asset?.[key] === undefined ? null : structuredClone(asset[key])]));
 }
@@ -322,6 +322,7 @@ function restoreSliceImageProcessingState(asset) {
 
 function clearSliceImageProcessingState(asset) {
   if (!asset) return;
+  delete asset.regeneration;
   delete asset.imageProcessingRestoreState;
   delete asset.localInpaintMethod;
   delete asset.localInpaintMaskDataUrl;
@@ -339,6 +340,7 @@ function clearSliceImageProcessingState(asset) {
 
 function getProcessedSliceResetMessage(asset) {
   const name = asset?.name || "切图资产";
+  if (asset?.regeneration) return `“${name}”已有 AI 重新生成结果，调整切图将取消该结果，是否继续？`;
   const hasTransparent = Boolean(asset?.aiTransparent);
   const hasSvg = Boolean(asset?.aiRedrawn);
   if (asset?.localInpaintMethod || asset?.upscaleMethod) {

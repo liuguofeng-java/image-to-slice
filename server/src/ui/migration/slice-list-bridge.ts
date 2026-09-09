@@ -5,7 +5,16 @@ import { useSliceListStore } from '../stores/slice-list';
 import type { SliceListEvent, SliceListSnapshot } from '../types/slice-list';
 import type { CutoutEditorBackend, CutoutEditorSnapshot, ImageEditorSaveResult, LocalImageTaskState } from '../types/cutout-editor';
 import SliceCutoutEditor from '../components/SliceCutoutEditor.vue';
+import SliceRegenerationReview from '../components/SliceRegenerationReview.vue';
+import type { RegenerationSnapshot, RegenerationAction } from '../types/regeneration';
 export { createAiTaskRegistry } from '../stores/ai-tasks';
+
+export function mountRegenerationReview(host: HTMLElement, initial: RegenerationSnapshot, onAction: (event: RegenerationAction) => void) {
+  const snapshot = shallowRef(initial);
+  const app = createApp(defineComponent({ setup: () => () => h(SliceRegenerationReview, { snapshot: snapshot.value, onAction }) }));
+  app.mount(host);
+  return { update(value: RegenerationSnapshot) { snapshot.value = value; }, dispose() { app.unmount(); } };
+}
 
 // Temporary explicit boundary, not a Vue wrapper around legacy app.js.
 // The list has one renderer and one set of handlers, owned entirely by Vue.

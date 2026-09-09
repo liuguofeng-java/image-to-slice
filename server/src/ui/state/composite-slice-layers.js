@@ -40,6 +40,7 @@ function normalizeCompositeSliceLayers(layers = []) {
     const contentType = normalizeSliceContentType(layer?.contentType, "image");
     const normalizedLayer = layer && typeof layer === "object" ? layer : {};
     normalizedLayer.contentType = contentType;
+    if (contentType !== "image") delete normalizedLayer.regenerateMarked;
     const placement = normalizedLayer.placement || {};
     const initialPlacement = normalizedLayer.initialPlacement || {};
     normalizedLayer.initialPlacement = Number.isFinite(Number(initialPlacement.x)) && Number.isFinite(Number(initialPlacement.y))

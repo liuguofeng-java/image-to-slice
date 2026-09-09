@@ -23,6 +23,7 @@ export interface SliceListRow {
   aiTransparencyCurrent: boolean;
   locallyRepaired: boolean;
   upscaled: boolean;
+  regenerateMarked?: boolean;
 }
 
 export type SliceActionName = 'preview' | 'remove' | 'cancel' | 'visibility' | 'settings'
