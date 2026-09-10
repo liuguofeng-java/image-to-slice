@@ -93,10 +93,8 @@ function getAiInpaintTypeLabel(asset) {
   return "AI补齐";
 }
 
-if (typeof module !== "undefined") {
-  module.exports = {
+export {
     createAiCompleteEditableCopy,
     createAiInpaintResultPair,
     getAiInpaintTypeLabel
   };
-}

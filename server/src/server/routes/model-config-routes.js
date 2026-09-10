@@ -61,7 +61,7 @@ function createModelConfigRoutes({
       const payload = await readJson(request);
       const state = getState();
       const config = createPreviewConfig(payload, state, validateModelConfigInput);
-      const result = await testModelConfig(config);
+      const result = await withRequestAbortSignal(request, response, signal => testModelConfig(config, { signal }));
       sendJson(response, 200, {
         config: {
           ...summarizeModelConfig(config),
@@ -186,7 +186,7 @@ function createModelConfigRoutes({
         ...existing,
         tasks: getVisibleConfigTasks(existing, state.taskRouting)
       };
-      const result = await testModelConfig(transientConfig);
+      const result = await withRequestAbortSignal(request, response, signal => testModelConfig(transientConfig, { signal }));
       sendJson(response, 200, {
         config: {
           ...summarizeModelConfig(transientConfig),

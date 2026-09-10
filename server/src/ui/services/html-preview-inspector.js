@@ -188,8 +188,7 @@ function calculateInspectorHighlightRect({ elementRect, iframeRect, viewportRect
   };
 }
 
-if (typeof module !== "undefined") {
-  module.exports = {
+export {
     calculateInspectorHighlightRect,
     canDeleteInspectorElement,
     clampInspectorWidth,
@@ -201,4 +200,3 @@ if (typeof module !== "undefined") {
     readInspectorImageAsset,
     readInspectorLayout
   };
-}

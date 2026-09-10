@@ -1,7 +1,13 @@
 const { spawn } = require("node:child_process");
 const path = require("node:path");
+const fs = require("node:fs");
 
 const projectRoot = path.resolve(__dirname, "..");
+const preview = process.argv.includes('--preview');
+if (preview && !fs.existsSync(path.join(projectRoot, 'dist', 'index.html'))) {
+  console.error('缺少网页构建产物，请先运行 npm run build。');
+  process.exit(1);
+}
 const services = [
   {
     name: "本地 API",
@@ -13,10 +19,13 @@ const services = [
     command: process.execPath,
     args: [
       path.join(projectRoot, "node_modules", "vite", "bin", "vite.js"),
+      ...(preview ? ['preview'] : []),
+      '--config',
+      'vite.vue.config.mts',
       "--host",
       "127.0.0.1",
       "--port",
-      "4173",
+      process.env.WEB_PORT || "4173",
       "--strictPort"
     ]
   }
@@ -52,9 +61,12 @@ for (const service of services) {
   });
 }
 
-console.log("本地 API：http://127.0.0.1:18787");
-console.log("浏览器预览：http://127.0.0.1:4173/figma-sim.html");
+console.log(`本地 API：http://127.0.0.1:${process.env.PORT || 18787}`);
+console.log(`${preview ? '生产预览' : 'Vue 开发服务器'}：http://127.0.0.1:${process.env.WEB_PORT || 4173}/`);
 console.log("按 Ctrl+C 停止全部服务。");
 
 process.once("SIGINT", () => stopServices(0));
 process.once("SIGTERM", () => stopServices(0));
+// Supervisors can disconnect their IPC channel for graceful child cleanup,
+// including on Windows where sending SIGINT from a parent is not portable.
+if (process.connected) process.once('disconnect', () => stopServices(0));

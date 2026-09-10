@@ -1,52 +1,28 @@
 # Project Guidelines
 
-This project ships a Figma plugin. Keep changes practical and avoid splitting files only to reduce line count.
+This is a standalone Vue 3 + TypeScript + Pinia web application with a Node API. Preserve the existing light theme and non-serializable resource boundaries.
 
-## Source Map
+## Source map
 
-- `src/plugin/`: Figma main-thread code. Put Figma API calls, node creation, import validation, and import positioning here.
-- `src/ui/app.js`: UI bootstrap and workflow orchestration. It may stay large when a flow is only used once.
-- `src/ui/api/`: Browser-side API wrappers, provider config helpers, storage, and workspace draft calls.
-- `src/ui/state/`: Reusable UI state rules and state transitions.
-- `src/ui/services/`: Reusable business logic that does not belong to a single DOM view.
-- `src/ui/renderers/`: Reusable DOM rendering helpers for panels, dialogs, lists, menus, and controls.
-- `src/ui/components/`: Migrated Vue single-file components. Do not add imperative DOM renderers for these views.
-- `src/ui/stores/`: Pinia stores; controllers, timers and non-serializable resources stay outside persisted state.
-- `src/ui/types/`: Typed component and state contracts.
-- `src/ui/migration/`: Temporary explicit bridges from unmigrated workflows. Do not import the legacy app into Vue components.
-- `src/ui/ui.template.html`: Source UI shell. Keep script placeholders here.
-- `src/ui/styles.css`: UI styles.
-- `src/vendor/`: Third-party or Figma-provided browser scripts. Keep them local and build-time inlined.
-- `dist/ui.html`: Generated Figma UI artifact. Do not edit it directly.
-- `server.js`: Local backend for config, workspace drafts, AI proxy requests, progress, and image processing.
+- `src/ui/main.ts`, `App.vue`: the single application entry and shared Pinia instance.
+- `components/`: Vue-owned views. No legacy page wrapper, global bootstrap API, business HTML strings, or v-html application shell.
+- `stores/workspace.ts`: typed workspace, image/slice models, selection and undo/redo. Preserve v1 draft compatibility.
+- `stores/ai-tasks.ts`: task ownership; controllers remain outside persisted state.
+- `composables/`: editor and batch lifecycle, cancellation and stale response checks.
+- `api/client.ts`: relative local API requests. Never store credentials in a workspace.
+- `services/`, `state/`, `src/core/`: reusable algorithms. Shared pure functions have one ESM implementation; Node uses synchronous ESM interop.
+- `server.js`, `src/server/`: Node API, providers, configuration, draft storage and local workers.
+- `index.html`: Vite mount node only. `dist/` is generated, ignored, and never hand edited.
 
-## How To Add Features
+## Changes
 
-1. Search for an existing helper, API wrapper, renderer, or state helper before adding new code.
-2. If code is used once, it can stay near the workflow in `src/ui/app.js`.
-3. If request, state, rendering, or service logic is reused or likely to be reused, put it in the matching module folder.
-4. Do not duplicate backend request logic inside event handlers. Use `fetchBackend()` and existing API helpers.
-5. Do not put Figma API code in UI files.
-6. Do not dynamically load third-party scripts from remote URLs in the plugin UI. Put them in `src/vendor/`.
-7. Do not hand-edit `dist/ui.html`; run `npm run build:ui` after UI source changes.
+Keep Vue state and template ownership together. Use refs and lifecycle cleanup for Canvas/DOM/listeners. Never add another Pinia root or restore the removed plugin/simulator bridges.
+Preserve asset ID, design geometry, pixel metadata and history schema. Async writes must check workspace/version, ignore late responses, and roll back failed asset commits and undo stacks.
+Do not move or delete model directories, virtual environments, credentials or historical data when changing the UI.
 
-## Verification
+## Validation
 
-Prefer the full check before committing:
-
-```bash
-npm test
-npm run build
-git diff --check
-```
-
-For small UI-only edits, at minimum run:
-
-```bash
-npm run build:ui
-node --check scripts/build-ui-html.js
-git diff --check
-```
-
-For migrated Vue components also run `npm run typecheck`, `npm run test:vue`, and `npm run test:e2e`.
-See `docs/vue-migration.md` before continuing the migration; do not treat the intermediate component integration as a completed Vue application.
+Run `npm test`, `npm run test:e2e`, `npm run build`, and `git diff --check`.
+E2E accesses the Vue root with mocked APIs and in-memory drafts. Do not silently call paid models.
+`npm run dev` / `npm start` runs API + Vite HMR on 4173. `npm run preview` runs API + built preview, requiring a prior build.
+Check desktop and narrow layouts and modal keyboard focus. See `docs/vue-migration.md`.

@@ -1,14 +1,11 @@
 import { defineConfig } from 'vite';
 import vue from '@vitejs/plugin-vue';
 
-// Transitional component bundle. The legacy shell is removed only once every
-// workflow has a Vue owner; never import or execute app.js from a Vue component.
+const apiTarget = `http://127.0.0.1:${process.env.PORT || 18787}`;
+const proxy = { '/api': apiTarget, '/health': apiTarget };
 export default defineConfig({
   plugins: [vue()],
-  define: { 'process.env.NODE_ENV': JSON.stringify('production') },
-  build: {
-    emptyOutDir: false,
-    outDir: 'dist',
-    lib: { entry: 'src/ui/migration/slice-list-bridge.ts', name: 'ImageToSliceVue', formats: ['iife'], fileName: () => 'vue-ui.js' }
-  }
+  server: { host: '127.0.0.1', port: 4173, strictPort: true, proxy },
+  preview: { host: '127.0.0.1', port: 4173, strictPort: true, proxy },
+  build: { outDir: 'dist', emptyOutDir: true }
 });

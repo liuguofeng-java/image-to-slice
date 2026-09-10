@@ -289,6 +289,6 @@ function escapeHtmlAttribute(value) {
   })[character]);
 }
 
-module.exports = {
+export {
   sanitizeFastGeneratedHtml
 };

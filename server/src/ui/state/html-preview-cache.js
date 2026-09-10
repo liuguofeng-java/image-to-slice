@@ -90,8 +90,7 @@ function isActiveHtmlPreviewRequest(requestId, {
   return !aborted && Number(requestId) > 0 && Number(requestId) === Number(activeRequestId);
 }
 
-if (typeof module !== "undefined") {
-  module.exports = {
+export {
     createHtmlPreviewCacheEntry,
     createEmptyHtmlPreviewCache,
     getCachedHtmlPreview,
@@ -101,4 +100,3 @@ if (typeof module !== "undefined") {
     isSupportedHtmlPreviewResult,
     normalizeHtmlPreviewCache
   };
-}

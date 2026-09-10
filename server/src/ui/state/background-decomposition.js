@@ -390,8 +390,7 @@ function buildBackgroundRepairJobs(review) {
   });
 }
 
-if (typeof module !== "undefined") {
-  module.exports = {
+export {
     buildBackgroundRepairJobs,
     createBackgroundDecompositionCache,
     createBackgroundDecompositionReview,
@@ -407,4 +406,3 @@ if (typeof module !== "undefined") {
     updateDecompositionBackgroundCornerRadius,
     updateDecompositionBackgroundRadius
   };
-}

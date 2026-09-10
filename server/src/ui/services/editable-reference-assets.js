@@ -297,8 +297,7 @@ function escapeEditableAssetAttribute(value) {
   })[character]);
 }
 
-if (typeof module !== "undefined") {
-  module.exports = {
+export {
     buildReferenceAssetCorrectionCss,
     chooseReferenceAssetOwnerCandidate,
     createEditableAssetDescriptors,
@@ -309,4 +308,3 @@ if (typeof module !== "undefined") {
     hydrateCanonicalAssetHtml,
     selectCanonicalReferenceAssets
   };
-}

@@ -10,10 +10,7 @@ test-results/
 *.log
 __pycache__/
 *.pyc
-dist/*
-!dist/code.js
-!dist/figma-sim.js
-!dist/ui.html
+dist/
 .idea
 .learnings
 .superpowers/

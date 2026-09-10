@@ -358,8 +358,7 @@ function getProcessedSliceResetMessage(asset) {
   return `“${name}”已被处理，调整切图将取消处理结果，是否继续？`;
 }
 
-if (typeof module !== "undefined") {
-  module.exports = {
+export {
     recoverLegacySliceTrimPosition,
     restoreSliceInitialPosition,
     applySliceTrimResult,
@@ -382,4 +381,3 @@ if (typeof module !== "undefined") {
     restoreSliceImageProcessingState,
     restoreSliceTransparencyState
   };
-}

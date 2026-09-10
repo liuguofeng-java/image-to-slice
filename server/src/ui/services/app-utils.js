@@ -169,8 +169,7 @@ function isPointInsideRect(x, y, rect) {
     y >= rect.top - tolerance && y <= rect.bottom + tolerance;
 }
 
-if (typeof module !== "undefined") {
-  module.exports = {
+export {
     calculateAnchoredPreviewScroll,
     calculatePreviewPlacement,
     calculatePreviewFitZoom,
@@ -188,4 +187,3 @@ if (typeof module !== "undefined") {
     sanitizeHtmlAssetStem,
     scalePlacement
   };
-}

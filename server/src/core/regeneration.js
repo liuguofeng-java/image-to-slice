@@ -26,4 +26,4 @@ function validateRegenerationDimensions(width, height, inputWidth = 1, inputHeig
   if (width < inputWidth || height < inputHeight) throw new Error(`未达到清晰度要求：输出 ${width} × ${height}，输入 ${inputWidth} × ${inputHeight}。`);
 }
 
-if (typeof module !== 'undefined') module.exports = { unionRegenerationRegions, validateRegenerationDimensions };
+export { unionRegenerationRegions, validateRegenerationDimensions };

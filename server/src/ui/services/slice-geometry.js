@@ -1,4 +1,4 @@
-const sliceGeometryClampNumber = typeof require === "function" ? require("./app-utils").clampNumber : clampNumber;
+import { clampNumber as sliceGeometryClampNumber } from './app-utils.js';
 
 function pointToScreenCoords(clientX, clientY, imageRect, screen) {
   const x = ((clientX - imageRect.left) / imageRect.width) * screen.width;
@@ -193,8 +193,7 @@ function hasSlicePlacementChanged(previous, next) {
   return ["x", "y", "width", "height"].some((field) => previous[field] !== next[field]);
 }
 
-if (typeof module !== "undefined") {
-  module.exports = {
+export {
     calculateDraggedSliceRadius,
     calculateSliceRadiusHandleInset,
     getSliceFieldMax,
@@ -209,4 +208,3 @@ if (typeof module !== "undefined") {
     pointToScreenCoords,
     setSliceCornerRadius
   };
-}

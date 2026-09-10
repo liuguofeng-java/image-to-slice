@@ -46,10 +46,8 @@ function createAiImageDimensionError(message) {
   return error;
 }
 
-if (typeof module !== "undefined") {
-  module.exports = {
+export {
     MAX_AI_IMAGE_DIMENSION,
     validateAiImageDimensions,
     validateSupportedAiImageType
   };
-}

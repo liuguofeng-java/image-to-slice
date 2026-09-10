@@ -37,8 +37,6 @@ async function requestAiInpaint({
   return image;
 }
 
-if (typeof module !== "undefined") {
-  module.exports = {
+export {
     requestAiInpaint
   };
-}

@@ -1,7 +1,7 @@
 export type SliceContentType = 'unclassified' | 'background' | 'image' | 'text';
 
-// Presentation data only. Source assets remain in the workspace until its
-// migration; this boundary cannot mutate or serialize a source asset by mistake.
+// Presentation data only. The shared workspace store owns source assets;
+// a list action is handled by the owning Vue workflow, never by DOM globals.
 export interface SliceListRow {
   id: string;
   parentId: string | null;

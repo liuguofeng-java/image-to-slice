@@ -1,0 +1,22 @@
+// Interop boundary for shared legacy algorithms. Persisted models are typed in types/workspace.ts.
+export function recoverLegacySliceTrimPosition(...args: any[]): any;
+export function restoreSliceInitialPosition(...args: any[]): any;
+export function applySliceTrimResult(...args: any[]): any;
+export function slicePlacementSignature(...args: any[]): any;
+export function applySliceSvgResult(...args: any[]): any;
+export function applySliceImageProcessingResult(...args: any[]): any;
+export function applySliceTransparencyResult(...args: any[]): any;
+export function createSliceImageProcessingRestoreState(...args: any[]): any;
+export function clearSliceImageProcessingState(...args: any[]): any;
+export function createSliceTransparencyRestoreState(...args: any[]): any;
+export function getSliceActiveImageDataUrl(...args: any[]): any;
+export function getSliceTransparencyRestoreDataUrl(...args: any[]): any;
+export function getSliceTransparencySourceDataUrl(...args: any[]): any;
+export function getProcessedSliceResetMessage(...args: any[]): any;
+export function hasProcessedSliceResult(...args: any[]): any;
+export function shouldPreserveProcessedSliceResult(...args: any[]): any;
+export function shouldRefreshSliceCropAfterPositionRestore(...args: any[]): any;
+export function isLockedAiCompleteAsset(...args: any[]): any;
+export function restoreSliceSvgState(...args: any[]): any;
+export function restoreSliceImageProcessingState(...args: any[]): any;
+export function restoreSliceTransparencyState(...args: any[]): any;

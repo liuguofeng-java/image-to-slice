@@ -36,7 +36,7 @@ npm start
 - `git clone --recurse-submodules ...`：下载主项目以及三个固定版本的模型源码。
 - `npm ci`：按锁文件安装 `server` 的 Node.js 依赖。
 - `npm run local-models:setup`：在项目总目录生成两个 CPU Python 虚拟环境并下载模型权重；首次执行需要较长时间。
-- `npm start`：启动本地 API 和网页。启动后打开 `http://127.0.0.1:4173/figma-sim.html`，使用期间不要关闭终端。
+- `npm start`：启动本地 API 和 Vue 开发服务器（支持热更新）。启动后打开 `http://127.0.0.1:4173/`，使用期间不要关闭终端。
 
 安装完成后的目录如下：
 
@@ -69,4 +69,4 @@ npm start
 
 如果只需要更新 Node.js 应用且本地模型环境已经可用，可以跳过 `npm run local-models:setup`。重复运行该命令是安全的：已经校验通过的源码、权重和虚拟环境会被复用。
 
-更完整的 Figma 插件安装、运行方式、模型检查和自定义路径说明见 [`server/README.md`](server/README.md)。
+生产预览先运行 `npm run build`，再运行 `npm run preview`。更完整的 Vue 应用运行方式、模型检查和自定义路径说明见 [`server/README.md`](server/README.md)。

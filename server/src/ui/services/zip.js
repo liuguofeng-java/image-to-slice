@@ -1,4 +1,4 @@
-const zipCrc32 = typeof require === "function" ? require("./app-utils").crc32 : crc32;
+import { crc32 as zipCrc32 } from './app-utils.js';
 
 function textToUint8Array(text) {
   return new TextEncoder().encode(text);
@@ -95,10 +95,8 @@ function getDosDate() {
   return ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
 }
 
-if (typeof module !== "undefined") {
-  module.exports = {
+export {
     createZipBlob,
     dataUrlToUint8Array,
     textToUint8Array
   };
-}

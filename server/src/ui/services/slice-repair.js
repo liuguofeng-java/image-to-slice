@@ -1,17 +1,6 @@
-const sliceRepairClampNumber = typeof require === "function" ? require("./app-utils").clampNumber : clampNumber;
-const {
-  averageBackgroundColors: sliceRepairAverageBackgroundColors,
-  colorDistance: sliceRepairColorDistance,
-  getPixelColor: sliceRepairGetPixelColor,
-  mixColors: sliceRepairMixColors,
-  toRgb: sliceRepairToRgb
-} = typeof require === "function" ? require("./image-color-utils") : {
-  averageBackgroundColors,
-  colorDistance,
-  getPixelColor,
-  mixColors,
-  toRgb
-};
+import { clampNumber as sliceRepairClampNumber } from './app-utils.js';
+import { averageBackgroundColors as sliceRepairAverageBackgroundColors, colorDistance as sliceRepairColorDistance, getPixelColor as sliceRepairGetPixelColor, mixColors as sliceRepairMixColors, toRgb as sliceRepairToRgb } from './image-color-utils.js';
+import { loadImageElement } from './image-io.js';
 
 async function createSliceRepairPatch(dataUrl, placement) {
   const source = await loadImageElement(dataUrl);
@@ -149,12 +138,10 @@ function paintEdgeBlendRepairPatch(context, width, height, sides, center) {
   context.putImageData(imageData, 0, 0);
 }
 
-if (typeof module !== "undefined") {
-  module.exports = {
+export {
     collectRectColors,
     createSliceRepairPatch,
     getExpandedSampleRect,
     paintEdgeBlendRepairPatch,
     sampleImmediatePlacementEdgeStats
   };
-}

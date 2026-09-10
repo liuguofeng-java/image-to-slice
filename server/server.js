@@ -3,7 +3,6 @@ const { AsyncLocalStorage } = require("async_hooks");
 const { Buffer } = require("buffer");
 const fs = require("fs");
 const path = require("path");
-const { chromium } = require("playwright");
 const {
   buildBackgroundDecompositionPrompt,
   buildBackgroundDecompositionJsonRepairPrompt,
@@ -33,9 +32,6 @@ const {
 const {
   createModelRequestContext
 } = require("./src/server/services/model-request-context");
-const {
-  createPlaywrightFigmaCaptureService
-} = require("./src/server/services/playwright-figma-capture");
 const {
   requestUiDecompositionText
 } = require("./src/server/services/ui-decomposition-request");
@@ -87,9 +83,6 @@ const {
   createLocalImageWorkerClient
 } = require("./src/server/services/local-image-worker-client");
 const {
-  exportFigManifest
-} = require("./src/fig-export/export-fig");
-const {
   buildRegionTextRecognitionPrompt,
   parseRegionTextRecognitionText
 } = require("./src/core/region-text-recognition");
@@ -98,14 +91,6 @@ const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 18787);
 const CONFIG_FILE = path.join(__dirname, ".local-provider-config.json");
 const WORKSPACE_HISTORY_DIR = path.join(__dirname, ".image-to-slice-history");
-const FIGMA_CAPTURE_RUNTIME = fs.readFileSync(
-  path.join(__dirname, "src/vendor/figma-capture.js"),
-  "utf8"
-);
-const playwrightFigmaCaptureService = createPlaywrightFigmaCaptureService({
-  chromium,
-  captureRuntime: FIGMA_CAPTURE_RUNTIME
-});
 const workspaceDraftStore = createWorkspaceDraftStore({
   historyDir: WORKSPACE_HISTORY_DIR,
   createThumbnail: createWorkspaceDraftThumbnail
@@ -174,10 +159,6 @@ const handleDesignRoutes = createDesignRoutes({
   planBackgroundDecomposition,
   recognizeTextRegion,
   reconstructEditableDesignH5,
-  captureHighFidelityFigma: (payload) =>
-    playwrightFigmaCaptureService.capture(payload),
-  exportFigManifest,
-  sendBinary,
   sendJson
 });
 const handleLocalSegmentationRoutes = createLocalSegmentationRoutes({
@@ -275,7 +256,6 @@ let shutdownPromise = null;
 function shutdownServer() {
   if (shutdownPromise) return shutdownPromise;
   shutdownPromise = Promise.allSettled([
-    playwrightFigmaCaptureService.close(),
     sam2WorkerClient.close(),
     localImageWorkerClient.close(),
     new Promise((resolve) => server.close(resolve))
@@ -317,9 +297,14 @@ function getConfigRequestContext(config) {
   });
 }
 
-async function testSelectedModelConfig(config) {
+async function testSelectedModelConfig(config, { signal } = {}) {
+  return aiRequestContext.run({ signal }, () => runSelectedModelConfigTest(config, signal));
+}
+
+async function runSelectedModelConfigTest(config, signal) {
   const requestContext = getConfigRequestContext(config);
   return testModelConfig(config, {
+    signal,
     vision: async () => {
       const data = await requestVisionChatCompletion({
         model: requestContext.config.model,
@@ -1043,7 +1028,7 @@ function buildEditableDesignH5Prompt({ prompt, width, height, previewWidth, prev
     : "- No user-sliced assets were provided.";
   return [
     "You are a senior UI screenshot-to-HTML reconstruction engineer and mobile UI tracing specialist.",
-    "Convert the attached UI screenshot into one standalone HTML document for visual inspection and later Figma import.",
+    "Convert the attached UI screenshot into one standalone HTML document for visual inspection and independent browser use.",
     "Return human-readable production-style HTML that a frontend developer can continue editing.",
     "Choose tags and nesting from the screenshot content. Do not force a fixed semantic tag checklist.",
     "Group each coherent visual unit so its image, title, description, badge, and action live under one readable parent.",
@@ -1074,7 +1059,7 @@ function buildEditableDesignH5Prompt({ prompt, width, height, previewWidth, prev
     "- Currency and numeric values must stay on one line, e.g. ¥268.00 must not become two lines or lose decimals.",
     "- Do not replace real icons with empty squares, checkboxes, emoji, generic placeholders, or unrelated icon glyphs.",
     "- If an icon is not provided as a sliced asset, draw a simple inline SVG with matching size, stroke weight, and position.",
-    "- Never use literal arrow characters such as ›, ‹, →, ←, ↓, ↑, >, or < as UI arrows. Draw chevrons, back arrows, refresh arrows, and dropdown arrows as inline SVG shapes so they remain vector icons after Figma import.",
+    "- Draw UI chevrons, back arrows, refresh arrows, and dropdown arrows as inline SVG shapes so they remain vector icons.",
     "- Avoid oversized text. Match the screenshot's apparent font scale in the source image: header text, card labels, secondary text, badges, and navigation labels must stay visually proportional to the screenshot.",
     "- All layout and presentation must be class-based CSS in <style>. Do not use inline style attributes.",
     "- No JavaScript. No external URLs. No web fonts.",
@@ -1349,14 +1334,12 @@ function readJson(request, maxBytes = 30 * 1024 * 1024) {
 }
 
 function isAllowedRequestOrigin(origin) {
-  if (!origin || origin === "null") return true;
+  if (!origin) return true;
   try {
     const url = new URL(origin);
     return url.hostname === "localhost"
       || url.hostname === "127.0.0.1"
-      || url.hostname === "::1"
-      || url.hostname === "figma.com"
-      || url.hostname.endsWith(".figma.com");
+      || url.hostname === "[::1]";
   } catch {
     return false;
   }

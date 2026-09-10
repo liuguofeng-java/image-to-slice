@@ -1,4 +1,4 @@
-const imageColorClampNumber = typeof require === "function" ? require("./app-utils").clampNumber : clampNumber;
+import { clampNumber as imageColorClampNumber } from './app-utils.js';
 
 function toRgb(color) {
   return `${Math.round(color.r)}, ${Math.round(color.g)}, ${Math.round(color.b)}`;
@@ -118,8 +118,7 @@ function colorDistance(r1, g1, b1, r2, g2, b2) {
   return Math.sqrt(dr * dr + dg * dg + db * db);
 }
 
-if (typeof module !== "undefined") {
-  module.exports = {
+export {
     averageBackgroundColors,
     averageColors,
     colorDistance,
@@ -129,4 +128,3 @@ if (typeof module !== "undefined") {
     sampleEdgeStats,
     toRgb
   };
-}

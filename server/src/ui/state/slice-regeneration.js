@@ -1,4 +1,4 @@
-const regenerationCore = typeof require === 'function' ? require('../../core/regeneration') : { unionRegenerationRegions, validateRegenerationDimensions };
+import * as regenerationCore from '../../core/regeneration.js';
 function canMarkRegeneration(asset) { return asset?.contentType === 'image' && !asset.aiProcessing; }
 function mapRegenerationChildren(parent, children, width, height) {
   const p = parent.placement;
@@ -51,4 +51,4 @@ async function requestRegeneration(fetchBackend, payload, signal) {
   }
   return { ...result.images[0], provider: result.provider || {} };
 }
-if (typeof module !== 'undefined') module.exports = { canMarkRegeneration, mapRegenerationChildren, regenerationSignature, applyRegenerationResult, requestRegeneration, ensureRegenerationSupported };
+export { canMarkRegeneration, mapRegenerationChildren, regenerationSignature, applyRegenerationResult, requestRegeneration, ensureRegenerationSupported };

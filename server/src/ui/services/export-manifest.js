@@ -1,6 +1,4 @@
-const exportManifestReserveSliceAssetName = typeof require === "function"
-  ? require("../../core/slice-asset-name").reserveSliceAssetName
-  : reserveSliceAssetName;
+import { reserveSliceAssetName as exportManifestReserveSliceAssetName } from '../../core/slice-asset-name.js';
 
 function buildSliceExportManifest({
   manifest,
@@ -87,10 +85,8 @@ function createScreenFromResultImage(image, fallback) {
   };
 }
 
-if (typeof module !== "undefined") {
-  module.exports = {
+export {
     buildDownloadFilename,
     buildSliceExportManifest,
     createScreenFromResultImage
   };
-}

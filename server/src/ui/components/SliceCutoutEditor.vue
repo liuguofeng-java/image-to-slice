@@ -1034,7 +1034,7 @@ watch([showUnsaved, pendingRepairSave], async ([unsaved, pending]) => {
 });
 marchTimer = setInterval(() => { if (visible.value && hasSelection.value && !previewResult.value && !compareOriginal.value && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) { march = (march + 1) % 8; render(true); } }, 160);
 onBeforeUnmount(() => { editorGeneration++; resizeObserver?.disconnect(); if (marchTimer) clearInterval(marchTimer); invalidateSam(); if (localProgressId.value) void props.backend.cancel(localProgressId.value).catch(() => {}); });
-defineExpose({ open, close: requestClose });
+defineExpose({ open, close: requestClose, dispose: closeNow, hasUnsaved: () => visible.value && (dirty.value || localBusy.value || samBusy.value || saving.value) });
 </script>
 
 <template>

@@ -206,8 +206,7 @@ function clampLayerNumber(value, min, max, fallback) {
   return Number.isFinite(number) ? Math.min(max, Math.max(min, number)) : fallback;
 }
 
-if (typeof module !== "undefined") {
-  module.exports = {
+export {
     SLICE_CONTENT_TYPES,
     buildCompositeSliceDisplayTree,
     containsSlicePlacement,
@@ -222,4 +221,3 @@ if (typeof module !== "undefined") {
     normalizeSliceContentType,
     normalizeSliceTextDefinition
   };
-}

@@ -46,10 +46,8 @@ function normalizeSliceAssetNames(assets) {
   return changed;
 }
 
-if (typeof module !== "undefined") {
-  module.exports = {
+export {
     normalizeSliceAssetName,
     normalizeSliceAssetNames,
     reserveSliceAssetName
   };
-}

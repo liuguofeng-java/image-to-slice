@@ -1,5 +1,5 @@
 import { computed, onScopeDispose, shallowRef } from 'vue';
-import { createPinia, defineStore, disposePinia } from 'pinia';
+import { defineStore } from 'pinia';
 
 export interface AiTaskRequest {
   controller: AbortController;
@@ -37,13 +37,3 @@ export const useAiTasksStore = defineStore('ai-tasks', () => {
   onScopeDispose(abortAll);
   return { runningIds, size, begin, get, finish, abortAll };
 });
-
-export function createAiTaskRegistry() {
-  const pinia = createPinia();
-  const tasks = useAiTasksStore(pinia);
-  return {
-    get size() { return tasks.size; },
-    begin: tasks.begin, get: tasks.get, finish: tasks.finish, abortAll: tasks.abortAll,
-    dispose: () => disposePinia(pinia)
-  };
-}

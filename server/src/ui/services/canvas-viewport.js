@@ -1,10 +1,4 @@
-const canvasViewportUtils = typeof require === "function"
-  ? require("./app-utils")
-  : {
-      calculatePreviewFitZoom,
-      calculatePreviewPlacement,
-      clampPreviewZoom
-    };
+import * as canvasViewportUtils from './app-utils.js';
 
 function calculateAnchoredCanvasScroll({
   scrollLeft = 0,
@@ -302,10 +296,8 @@ function createCanvasViewportController({
   };
 }
 
-if (typeof module !== "undefined") {
-  module.exports = {
+export {
     calculateAnchoredCanvasScroll,
     calculateWheelZoom,
     createCanvasViewportController
   };
-}

@@ -2,7 +2,6 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { applySliceTrimResult, applySliceImageProcessingResult, restoreSliceImageProcessingState, applySliceTransparencyResult, restoreSliceTransparencyState, slicePlacementSignature, shouldPreserveProcessedSliceResult } = require('../src/ui/state/slice-ai-state');
 const { buildSliceExportManifest } = require('../src/ui/services/export-manifest');
-const { createUiAssetScreen } = require('../src/plugin/screen-importer');
 const { restoreSliceInitialPosition, recoverLegacySliceTrimPosition } = require('../src/ui/state/slice-ai-state');
 const trim = { dataUrl: 'trimmed', left: -2, top: 3, sourcePixelWidth: 200, sourcePixelHeight: 100, outputPixelWidth: 104, outputPixelHeight: 60 };
 
@@ -96,7 +95,7 @@ test('trimming an already moved slice preserves its original restore target thro
   assert.equal(asset.dataUrl, 'trimmed');
 });
 
-test('trim geometry survives serialization, Figma import and restoration', async () => {
+test('trim geometry survives serialization, export and restoration', async () => {
   const dataUrl = 'data:image/png;base64,AA==';
   const asset = { id: 'a', name: 'trimmed-subject', dataUrl, placement: { x: 0, y: 0, width: 101, height: 51 } };
   const original = structuredClone(asset);
@@ -106,23 +105,10 @@ test('trim geometry survives serialization, Figma import and restoration', async
   const manifest = buildSliceExportManifest({ manifest: { screen: { width: 400, height: 400 } }, activeImage: { sliceManifest: { assets: [restoredWorkspaceAsset] } }, imageIndex: 0, getSliceRadius: () => 0 });
   manifest.previewImage = { dataUrl };
   manifest.assets[0].dataUrl = dataUrl;
-  const makeNode = type => ({ type, children: [], pluginData: {},
-    resize(width, height) { this.width = width; this.height = height; },
-    appendChild(child) { this.children.push(child); },
-    setPluginData(key, value) { this.pluginData[key] = value; },
-    remove() { this.removed = true; }
-  });
-  const figmaApi = {
-    currentPage: { children: [], selection: [] },
-    viewport: { center: { x: 0, y: 0 }, scrollAndZoomIntoView() {} },
-    createFrame: () => makeNode('FRAME'), createRectangle: () => makeNode('RECTANGLE'),
-    createImage: () => ({ hash: 'test-image' }), base64Decode: value => Buffer.from(value, 'base64')
-  };
-  await createUiAssetScreen({ figmaApi, manifest, notifyRecoverableError: (_message, error) => { throw error; } });
-  const imported = figmaApi.currentPage.selection[0].children[1];
-  assert.deepEqual({ x: imported.x, y: imported.y, width: imported.width, height: imported.height }, asset.placement);
-  assert.ok(imported.x < 0, 'external transparent padding may extend beyond the original design');
-  assert.equal(Number.isInteger(imported.width), false, 'design coordinates must not be rounded');
+  const exported = manifest.assets[0].placement;
+  assert.deepEqual(exported, asset.placement);
+  assert.ok(exported.x < 0, 'transparent padding may extend beyond the design');
+  assert.equal(Number.isInteger(exported.width), false, 'design coordinates must not be rounded');
   restoreSliceImageProcessingState(restoredWorkspaceAsset);
   assert.deepEqual(restoredWorkspaceAsset.placement, original.placement);
   assert.equal(restoredWorkspaceAsset.dataUrl, original.dataUrl);

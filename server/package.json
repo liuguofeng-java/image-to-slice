@@ -10,34 +10,26 @@
     "local-models:check": "node scripts/check-local-models.js",
     "sam2:check": "node scripts/check-sam2.js",
     "local-ai:check": "node scripts/check-local-ai.js",
-    "build": "npm run typecheck && npm run build:ui && npm run build:plugin-main && npm run build:figma-sim",
-    "build:ui": "npm run build:vue && node scripts/build-ui-html.js",
+    "build": "npm run typecheck && vite build --config vite.vue.config.mts",
+    "build:ui": "vite build --config vite.vue.config.mts",
     "build:vue": "vite build --config vite.vue.config.mts",
     "typecheck": "vue-tsc -p tsconfig.ui.json --noEmit && tsc -p tsconfig.tools.json --noEmit && vue-tsc -p tsconfig.test.json --noEmit",
     "test:vue": "vitest run",
     "test:unit": "npm run unit && npm run test:vue",
     "test:e2e": "npm run build:ui && node tests/e2e/vue-migration.cjs",
-    "build:plugin-main": "vite build --config vite.plugin-main.config.js",
-    "build:figma-sim": "vite build --config vite.figma-sim.config.js",
-    "preview": "vite --host 127.0.0.1 --port 4173 --strictPort",
+    "preview": "node scripts/start-local.js --preview",
     "unit": "node --test tests/**/*.test.js",
-    "test": "npm run typecheck && npm run test:unit && node --check server.js && node --check dist/code.js && node --check dist/figma-sim.js && node --check src/plugin/main.js && node --check vite.plugin-main.config.js && node --check vite.figma-sim.config.js"
+    "test": "npm run typecheck && npm run test:unit && node --check server.js"
   },
   "engines": {
     "node": ">=20.19.0"
   },
   "dependencies": {
-    "fast-xml-parser": "^5.3.8",
-    "makerjs": "^0.19.2",
-    "openfig-core": "^0.4.1",
     "pinia": "^4.0.3",
     "sharp": "^0.34.5",
-    "svgpath": "^2.6.0",
-    "vue": "^3.5.42",
-    "zstd-codec": "^0.1.5"
+    "vue": "^3.5.42"
   },
   "devDependencies": {
-    "@figma/plugin-typings": "^1.138.0",
     "@types/node": "22.20.1",
     "@vitejs/plugin-vue": "^6.0.8",
     "@vue/test-utils": "^2.5.0",

@@ -92,12 +92,10 @@ function createFastEditableExportFiles({ html, css, script, assets = [], textToB
   ];
 }
 
-if (typeof module !== "undefined") {
-  module.exports = {
+export {
     buildFastEditableExportCss,
     buildFastEditableExportScript,
     buildReferenceAssetExportCss,
     createFastEditableExportFiles,
     normalizeEditableExportHead
   };
-}

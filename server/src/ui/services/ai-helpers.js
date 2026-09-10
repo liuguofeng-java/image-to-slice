@@ -75,12 +75,10 @@ function buildBackgroundRestorePrompt(background) {
   ].join("\n");
 }
 
-if (typeof module !== "undefined") {
-  module.exports = {
+export {
     buildAiCompletePrompt,
     buildAiTransparentPrompt,
     buildCompositeParentCleanupPrompt,
     buildBackgroundRestorePrompt,
     createAiProgressId
   };
-}
