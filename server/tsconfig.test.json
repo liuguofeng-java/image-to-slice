@@ -1,8 +1,0 @@
-{
-  "extends": "./tsconfig.ui.json",
-  "compilerOptions": {
-    "types": ["vite/client", "node"],
-    "tsBuildInfoFile": "./node_modules/.cache/tests.tsbuildinfo"
-  },
-  "include": ["src/ui/**/*.ts", "src/ui/**/*.vue", "tests/vue/**/*.spec.ts"]
-}
