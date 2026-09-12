@@ -5,7 +5,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
 import { createApp } from '../src/app.js';
-import { normalizeRect, croppedLayer, point, type Layer, type Candidate } from '../src/domain.js';
+import {
+  normalizeRect,
+  croppedLayer,
+  point,
+  type ImageLayer,
+  type TextLayer,
+  type Candidate,
+} from '../src/domain.js';
 import { urlFor, providerRequest } from '../src/provider.js';
 import { unzipSync } from 'fflate';
 
@@ -34,8 +41,9 @@ async function fixture(t: any, analyzer?: any) {
     .toBuffer();
   const asset = await ctx.storage.import(bytes, 'fixture.png'),
     project = await ctx.storage.create('测试项目');
-  const layer: Layer = {
+  const layer: ImageLayer = {
     id: 'source',
+    type: 'image',
     assetId: asset.id,
     name: '来源图',
     x: -12.5,
@@ -70,7 +78,7 @@ test('geometry: outward rounding and transform-preserving crops', () => {
       rotation: 37,
       flipX: true,
       flipY: true,
-    } as Layer,
+    } as ImageLayer,
     a = { id: 'asset', name: '', width: 80, height: 40 };
   const crop = croppedLayer(l, a, row, { id: 'out', name: '', width: 7, height: 8 });
   for (const [x, y] of [
@@ -190,6 +198,59 @@ test('manual split is atomic and idempotent; original pixels and source transfor
   });
   assert.equal(mismatch.statusCode, 409);
 });
+test('mixed AI candidates atomically create image and editable text layers', async (t) => {
+  const { app, project, layer } = await fixture(t);
+  const started = await app.inject({
+    method: 'POST',
+    url: '/api/v1/split-jobs',
+    payload: {
+      projectId: project.id,
+      sceneId: project.activeSceneId,
+      layerId: layer.id,
+      region: { x: 0, y: 0, width: 40, height: 30 },
+      manual: true,
+    },
+  });
+  const text: Candidate = {
+    id: 'text-candidate',
+    name: '按钮文字',
+    category: 'text',
+    enabled: true,
+    x: 4,
+    y: 6,
+    width: 20,
+    height: 8,
+    text: {
+      content: '开始游戏',
+      fontFamily: 'sans-serif',
+      fontSize: 10,
+      fontWeight: 700,
+      fontStyle: 'normal',
+      fill: '#ffffff',
+      align: 'center',
+      verticalAlign: 'middle',
+      lineHeight: 1.2,
+      letterSpacing: 0,
+      resizeMode: 'fixed',
+    },
+  };
+  const applied = await app.inject({
+    method: 'POST',
+    url: `/api/v1/split-jobs/${started.json().id}/apply`,
+    payload: {
+      revision: project.revision,
+      operationId: 'mixed-apply',
+      candidates: [row, text],
+    },
+  });
+  assert.equal(applied.statusCode, 200, applied.body);
+  const layers = applied.json().scenes[0].layers;
+  assert.deepEqual(layers[0], layer);
+  assert.equal(layers[1].type, 'image');
+  assert.equal(layers[2].type, 'text');
+  assert.equal(layers[2].content, '开始游戏');
+  assert.equal(layers[2].assetId, undefined);
+});
 test('cancel ignores late model response, source edits block application', async (t) => {
   let resolve!: (v: Candidate[]) => void;
   const { app, storage, project } = await fixture(
@@ -261,6 +322,66 @@ test('exports PNG at native resolution, ZIP and scene respect canvas bounds', as
   });
   assert.equal(scene.statusCode, 200);
   assert.equal((await sharp(scene.rawPayload).metadata()).width, 1440);
+});
+test('editable text exports at design pixels and cannot be used as an AI split source', async (t) => {
+  const { app, storage, project } = await fixture(t);
+  const text: TextLayer = {
+    id: 'editable-text',
+    type: 'text',
+    name: '安全文字',
+    x: 20,
+    y: 30,
+    width: 180,
+    height: 56,
+    rotation: 0,
+    flipX: false,
+    flipY: false,
+    opacity: 0.8,
+    hidden: false,
+    locked: false,
+    content: '<span foreground="red">不执行标记</span> & 中文\u0000',
+    fontFamily: 'sans-serif',
+    fontSize: 22,
+    fontWeight: 700,
+    fontStyle: 'italic',
+    fill: '#123456cc',
+    align: 'center',
+    verticalAlign: 'middle',
+    lineHeight: 1.3,
+    letterSpacing: 1,
+    resizeMode: 'fixed',
+  };
+  project.scenes[0].layers.push(text);
+  const saved = await storage.save(project.id, project.revision, project);
+  const png = await app.inject({
+    method: 'POST',
+    url: '/api/v1/exports',
+    payload: {
+      projectId: project.id,
+      sceneId: project.activeSceneId,
+      layerIds: [text.id],
+      kind: 'png',
+    },
+  });
+  assert.equal(png.statusCode, 200, png.body.slice(0, 200));
+  const meta = await sharp(png.rawPayload).metadata();
+  assert.equal(meta.width, 180);
+  assert.equal(meta.height, 56);
+
+  const split = await app.inject({
+    method: 'POST',
+    url: '/api/v1/split-jobs',
+    payload: {
+      projectId: project.id,
+      sceneId: project.activeSceneId,
+      layerId: text.id,
+      region: { x: 0, y: 0, width: 10, height: 10 },
+      manual: true,
+    },
+  });
+  assert.equal(split.statusCode, 400, split.body);
+  assert.match(split.body, /只有图片图层/);
+  assert.equal(saved.scenes[0].layers.find((layer) => layer.id === text.id)?.type, 'text');
 });
 test('OpenAPI request contract and origin/host protections', async (t) => {
   const { app } = await fixture(t);

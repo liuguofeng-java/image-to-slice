@@ -92,8 +92,39 @@ small {
 .is-panning {
   cursor: grab;
 }
+.is-panning-active {
+  cursor: grabbing;
+}
 .is-splitting {
   cursor: crosshair;
+}
+.is-typing {
+  cursor: text;
+}
+.canvas-text-editor {
+  position: absolute;
+  z-index: 7;
+  box-sizing: border-box;
+  min-width: 24px;
+  min-height: 1em;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  resize: none;
+  border: 1px dashed var(--green);
+  outline: none;
+  background: transparent;
+  transform-origin: center center;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.scrubbable-number .el-input__wrapper,
+.scrubbable-number input {
+  cursor: ew-resize;
+}
+.scrubbable-number.is-scrubbing .el-input__wrapper {
+  box-shadow: 0 0 0 1px var(--green) inset !important;
+  background: linear-gradient(90deg, #a3e60018, transparent 70%), var(--control);
 }
 .floating-bar,
 .side-panel {
@@ -355,12 +386,62 @@ small {
 }
 .layer-search {
   padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.layer-search .el-input {
+  min-width: 0;
+  flex: 1;
+}
+.layer-search > .icon-button {
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  opacity: 1;
 }
 .layer-list {
   padding-bottom: 12px;
 }
 .layer-row {
   margin: 1px 0;
+}
+.layer-row.layer-tree-row {
+  padding-left: calc(4px + var(--tree-depth) * 14px);
+}
+.tree-toggle,
+.tree-toggle-placeholder {
+  width: 24px;
+  height: 30px;
+  flex: 0 0 24px;
+  display: inline-grid;
+  place-items: center;
+  color: #9b9b9b;
+  border-radius: 4px;
+}
+.tree-toggle {
+  font-size: 12px;
+}
+.tree-toggle:not(:disabled):hover {
+  color: #fff;
+  background: transparent;
+}
+.tree-toggle:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.layer-tree-row .layer-select {
+  padding-left: 2px;
+  gap: 8px;
+}
+.layer-tree-row .layer-select:focus-visible {
+  outline-offset: -1px;
+}
+.layer-tree-row.selected .tree-toggle {
+  color: #253006;
+}
+.layer-tree-row.selected .tree-toggle:not(:disabled):hover {
+  color: #080808;
 }
 .layer-row.hidden .layer-select {
   opacity: 0.5;
@@ -425,6 +506,34 @@ small {
 .field-grid .el-input-number {
   width: 100%;
   min-width: 0;
+}
+.stacked-field {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  color: #aaa;
+  font-size: 11px;
+}
+.text-control-row,
+.candidate-text-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.text-control-row > .el-select,
+.candidate-text-controls > .el-select {
+  min-width: 0;
+  flex: 1;
+}
+.segmented-controls {
+  align-items: stretch;
+}
+.segmented-controls .el-radio-group {
+  flex-shrink: 0;
+}
+.warning-hint {
+  color: #d9b86c;
 }
 .field-grid .el-input__wrapper {
   padding: 0;
@@ -536,7 +645,29 @@ small {
   width: 100%;
 }
 .el-message-box {
+  width: min(440px, calc(100vw - 32px));
   max-width: calc(100vw - 32px);
+  min-width: 0;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+}
+.el-message-box__message {
+  min-width: 0;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.el-message-box__message p {
+  margin: 0;
+}
+.el-message-box__btns {
+  gap: 8px;
+}
+@media (max-width: 520px) {
+  .el-message-box {
+    padding: 16px;
+  }
 }
 .bottom-toolbar {
   position: absolute;
@@ -769,6 +900,25 @@ small {
 .candidate-card .field-grid {
   margin-bottom: 8px;
 }
+.candidate-card > .el-select {
+  margin-top: 8px;
+}
+.candidate-text-fields {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #0d0d0d;
+}
+.candidate-text-fields .field-grid,
+.candidate-text-fields .stacked-field,
+.candidate-text-fields .candidate-text-controls,
+.candidate-text-fields .hint {
+  margin-top: 0;
+  margin-bottom: 0;
+}
 .inline-message {
   margin: 12px 16px;
   color: #c5cfaf;
@@ -863,6 +1013,13 @@ small {
   .scene-select,
   .layer-select {
     height: 44px;
+  }
+  .layer-search > .icon-button,
+  .tree-toggle,
+  .tree-toggle-placeholder {
+    width: 44px;
+    height: 44px;
+    flex-basis: 44px;
   }
   .field-grid label {
     height: 40px;

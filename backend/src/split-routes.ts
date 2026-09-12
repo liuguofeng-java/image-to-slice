@@ -4,6 +4,7 @@ import { Storage } from './storage.js';
 import { analyze, type Analyzer } from './provider.js';
 import {
   candidateSchema,
+  candidateTextLayer,
   croppedLayer,
   fail,
   idSchema,
@@ -12,7 +13,7 @@ import {
   signature,
   uid,
   type Candidate,
-  type Layer,
+  type ImageLayer,
   type Rect,
 } from './domain.js';
 import { schema } from './contracts.js';
@@ -24,7 +25,7 @@ type Job = {
   sceneId: string;
   layerId: string;
   sourceSignature: string;
-  source: Layer;
+  source: ImageLayer;
   region: Rect;
   status: 'running' | 'ready' | 'failed' | 'cancelled' | 'applied';
   message: string;
@@ -60,7 +61,9 @@ export function registerSplitRoutes(
     const b = startSchema.parse(req.body),
       p = await storage.project(b.projectId),
       source = p.scenes.find((s) => s.id === b.sceneId)?.layers.find((l) => l.id === b.layerId);
-    if (!source || source.hidden || source.locked) fail('请选择可见、未锁定的图片');
+    if (!source) fail('来源图层不存在');
+    if (source.type !== 'image') fail('只有图片图层可以进行 AI 拆图');
+    if (source.hidden || source.locked) fail('请选择可见、未锁定的图片');
     const asset = await storage.asset(source.assetId),
       region = normalizeRect(b.region, asset.width, asset.height);
     const config = b.manual ? null : await configured();
@@ -154,7 +157,7 @@ export function registerSplitRoutes(
         const scene = p.scenes.find((s) => s.id === j.sceneId),
           index = scene?.layers.findIndex((l) => l.id === j.layerId) ?? -1;
         const source = scene?.layers[index];
-        if (!source || signature(source) !== j.sourceSignature)
+        if (!source || source.type !== 'image' || signature(source) !== j.sourceSignature)
           fail('来源图片已改变，请重新分析', 409);
         const asset = await storage.asset(source.assetId),
           selected = b.candidates.filter((c) => c.enabled);
@@ -171,8 +174,11 @@ export function registerSplitRoutes(
           )
             fail('候选必须在分析范围内');
           const c = { ...candidate, ...r };
-          const cropped = await storage.crop(asset.id, c, c.name);
-          layers.push(croppedLayer(source, asset, c, cropped));
+          if (c.category === 'text') layers.push(candidateTextLayer(source, asset, c));
+          else {
+            const cropped = await storage.crop(asset.id, c, c.name);
+            layers.push(croppedLayer(source, asset, c, cropped));
+          }
         }
         // 裁片全部就绪后才一次更新图层与回执。失败时可留下未引用的不可变图片，
         // 但绝不能保存半套图层；首期不自动清理资源，以保护撤销引用。

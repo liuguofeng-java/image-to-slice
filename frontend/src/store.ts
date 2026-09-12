@@ -45,7 +45,7 @@ export const useEditor = defineStore('editor', () => {
     schedule();
   }
   /** 同步事务：校验失败恢复内容；成功且确实有变化才记录一个撤销步骤。 */
-  function mutate(fn: () => void) {
+  function mutate(fn: () => void, coalesceFrom?: Document) {
     if (!project.value || exclusive.value) return;
     const before = doc();
     try {
@@ -61,10 +61,34 @@ export const useEditor = defineStore('editor', () => {
       throw e;
     }
     if (JSON.stringify(before) === JSON.stringify(doc())) return;
-    undoStack.value.push(before);
+    if (!coalesceFrom) undoStack.value.push(before);
+    else {
+      const target = JSON.stringify(coalesceFrom),
+        after = JSON.stringify(doc()),
+        last = JSON.stringify(undoStack.value.at(-1));
+      if (after === target && last === target) undoStack.value.pop();
+      else if (after !== target && last !== target) undoStack.value.push(clone(coalesceFrom));
+    }
     if (undoStack.value.length > 100) undoStack.value.shift();
     redoStack.value = [];
     touch();
+  }
+  /** 拖动/连续输入的轻量预览：不深拷贝、不改撤销栈，提交时再合并成一个事务。 */
+  function preview(fn: () => void) {
+    if (!project.value || exclusive.value) return;
+    fn();
+    generation.value++;
+    dirty.value = true;
+    error.value = '';
+  }
+  function commitPreview(before: Document) {
+    if (!project.value) return false;
+    if (JSON.stringify(before) === JSON.stringify(doc())) return false;
+    undoStack.value.push(clone(before));
+    if (undoStack.value.length > 100) undoStack.value.shift();
+    redoStack.value = [];
+    schedule();
+    return true;
   }
   /** 串行保存，避免自动保存与 Ctrl+S 竞争同一个服务端版本号。 */
   async function save() {
@@ -110,7 +134,11 @@ export const useEditor = defineStore('editor', () => {
     } while (dirty.value);
   }
   async function loadAssets(p: Project) {
-    const list = [...new Set(p.scenes.flatMap((s) => s.layers.map((l) => l.assetId)))];
+    const list = [
+      ...new Set(
+        p.scenes.flatMap((s) => s.layers.filter((l) => l.type === 'image').map((l) => l.assetId)),
+      ),
+    ];
     const metas = await Promise.all(list.map((id) => api.asset(id)));
     for (const a of metas) assets.value[a.id] = a;
   }
@@ -234,6 +262,7 @@ export const useEditor = defineStore('editor', () => {
           assets.value[a.id] = a;
           const l: Layer = {
             id: crypto.randomUUID(),
+            type: 'image',
             assetId: a.id,
             name: a.name.replace(/\.[^.]+$/, ''),
             x: aIndex * 24,
@@ -278,6 +307,8 @@ export const useEditor = defineStore('editor', () => {
     single,
     doc,
     mutate,
+    preview,
+    commitPreview,
     touch,
     save,
     flush,

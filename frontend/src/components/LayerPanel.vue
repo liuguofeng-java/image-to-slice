@@ -1,9 +1,14 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import {
   Plus,
   Search,
   Picture,
+  Document as TextIcon,
+  ArrowRight,
+  ArrowDown,
+  Expand,
+  Fold,
   View,
   Hide,
   Lock,
@@ -13,15 +18,148 @@ import {
 } from '@element-plus/icons-vue';
 import { ElMessageBox } from 'element-plus';
 import { useEditor } from '../store';
+import { buildLayerTree, type LayerTreeNode } from '../layerTree';
 import IconButton from './IconButton.vue';
 const store = useEditor(),
   search = ref(''),
-  dragged = ref('');
-const rows = computed(() =>
-  [...store.layers]
-    .reverse()
-    .filter((l) => l.name.toLowerCase().includes(search.value.toLowerCase())),
+  dragged = ref(''),
+  focused = ref(''),
+  collapsedByScene = ref<Record<string, string[]>>({});
+
+interface TreeRow {
+  node: LayerTreeNode;
+  depth: number;
+  position: number;
+  setSize: number;
+}
+
+const tree = computed(() => buildLayerTree(store.layers));
+const branchIds = computed(() =>
+  [...tree.value.nodesById.values()]
+    .filter((node) => node.children.length > 0)
+    .map((node) => node.layer.id),
 );
+const allCollapsed = computed(
+  () => branchIds.value.length > 0 && branchIds.value.every((id) => isCollapsed(id)),
+);
+const filteredRoots = computed(() => {
+  const query = search.value.trim().toLocaleLowerCase();
+  if (!query) return tree.value.roots;
+  const filter = (node: LayerTreeNode): LayerTreeNode | undefined => {
+    const children = node.children.map(filter).filter(Boolean) as LayerTreeNode[];
+    const label =
+      node.layer.type === 'text' ? `${node.layer.name} ${node.layer.content}` : node.layer.name;
+    return label.toLocaleLowerCase().includes(query) || children.length
+      ? { layer: node.layer, children }
+      : undefined;
+  };
+  return tree.value.roots.map(filter).filter(Boolean) as LayerTreeNode[];
+});
+function sceneCollapsed() {
+  const id = store.scene?.id;
+  return id ? collapsedByScene.value[id] || [] : [];
+}
+function isCollapsed(id: string) {
+  return sceneCollapsed().includes(id);
+}
+function isExpanded(id: string) {
+  return !!search.value.trim() || !isCollapsed(id);
+}
+function setCollapsed(id: string, value: boolean) {
+  const sceneId = store.scene?.id;
+  if (!sceneId) return;
+  const current = sceneCollapsed(),
+    next = value ? [...new Set([...current, id])] : current.filter((item) => item !== id);
+  collapsedByScene.value = { ...collapsedByScene.value, [sceneId]: next };
+}
+function toggle(id: string) {
+  if (!search.value.trim()) setCollapsed(id, !isCollapsed(id));
+}
+function toggleAll() {
+  const sceneId = store.scene?.id;
+  if (!sceneId || search.value.trim()) return;
+  collapsedByScene.value = {
+    ...collapsedByScene.value,
+    [sceneId]: allCollapsed.value ? [] : [...branchIds.value],
+  };
+}
+const rows = computed(() => {
+  const result: TreeRow[] = [];
+  const visit = (nodes: LayerTreeNode[], depth: number) => {
+    nodes.forEach((node, index) => {
+      result.push({ node, depth, position: index + 1, setSize: nodes.length });
+      if (node.children.length && isExpanded(node.layer.id)) visit(node.children, depth + 1);
+    });
+  };
+  visit(filteredRoots.value, 0);
+  return result;
+});
+const tabStopId = computed(() => {
+  const ids = new Set(rows.value.map((row) => row.node.layer.id));
+  if (ids.has(focused.value)) return focused.value;
+  return store.selected.find((id) => ids.has(id)) || rows.value[0]?.node.layer.id || '';
+});
+
+function expandAncestors(ids: string[]) {
+  const sceneId = store.scene?.id;
+  if (!sceneId) return;
+  const expanded = new Set<string>();
+  for (const id of ids) {
+    let parent = tree.value.parentById.get(id);
+    while (parent) {
+      expanded.add(parent);
+      parent = tree.value.parentById.get(parent);
+    }
+  }
+  if (!expanded.size) return;
+  const next = sceneCollapsed().filter((id) => !expanded.has(id));
+  if (next.length !== sceneCollapsed().length)
+    collapsedByScene.value = { ...collapsedByScene.value, [sceneId]: next };
+}
+watch(
+  () => ({
+    sceneId: store.scene?.id,
+    selected: [...store.selected],
+    parents: tree.value.parentById,
+  }),
+  ({ sceneId, selected }) => {
+    if (!sceneId) return;
+    expandAncestors(selected);
+    if (!tree.value.nodesById.has(focused.value)) focused.value = '';
+  },
+);
+
+function focusRow(id: string) {
+  focused.value = id;
+  void nextTick(() => document.getElementById(`layer-tree-${id}`)?.focus());
+}
+function selectLayer(id: string, event: MouseEvent | KeyboardEvent) {
+  store.select(id, event.shiftKey || event.ctrlKey || event.metaKey);
+  focused.value = id;
+}
+function navigate(event: KeyboardEvent, row: TreeRow) {
+  const index = rows.value.findIndex((item) => item.node.layer.id === row.node.layer.id),
+    node = tree.value.nodesById.get(row.node.layer.id),
+    parentId = tree.value.parentById.get(row.node.layer.id);
+  let destination = '';
+  if (event.key === 'ArrowDown') destination = rows.value[index + 1]?.node.layer.id || '';
+  else if (event.key === 'ArrowUp') destination = rows.value[index - 1]?.node.layer.id || '';
+  else if (event.key === 'Home') destination = rows.value[0]?.node.layer.id || '';
+  else if (event.key === 'End') destination = rows.value.at(-1)?.node.layer.id || '';
+  else if (event.key === 'ArrowRight' && node?.children.length) {
+    if (!isExpanded(node.layer.id)) setCollapsed(node.layer.id, false);
+    else destination = rows.value[index + 1]?.node.layer.id || '';
+  } else if (event.key === 'ArrowLeft') {
+    if (node?.children.length && isExpanded(node.layer.id) && !search.value.trim())
+      setCollapsed(node.layer.id, true);
+    else destination = parentId || '';
+  } else if (event.key === 'Enter' || event.key === ' ') {
+    selectLayer(row.node.layer.id, event);
+  } else return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (destination) focusRow(destination);
+}
 async function rename(id: string) {
   const s = store.project!.scenes.find((s) => s.id === id)!;
   try {
@@ -121,34 +259,69 @@ function reorder(id: string) {
         :prefix-icon="Search"
         clearable
       />
+      <IconButton
+        :label="allCollapsed ? '全部展开图层树' : '全部收起图层树'"
+        :title="allCollapsed ? '全部展开' : '全部收起'"
+        :icon="allCollapsed ? Expand : Fold"
+        :disabled="!branchIds.length || !!search.trim()"
+        @click="toggleAll"
+      />
     </div>
-    <div class="layer-list" role="listbox" aria-label="图层列表" aria-multiselectable="true">
+    <div class="layer-list" role="tree" aria-label="图层列表" aria-multiselectable="true">
       <div
-        v-for="l in rows"
-        :key="l.id"
-        class="layer-row"
-        :class="{ selected: store.selected.includes(l.id), hidden: l.hidden }"
-        :draggable="!store.exclusive && !l.locked"
-        @dragstart="dragged = l.id"
+        v-for="row in rows"
+        :key="row.node.layer.id"
+        role="none"
+        class="layer-row layer-tree-row"
+        :class="{
+          selected: store.selected.includes(row.node.layer.id),
+          hidden: row.node.layer.hidden,
+        }"
+        :style="{ '--tree-depth': row.depth }"
+        :draggable="!store.exclusive && !row.node.layer.locked"
+        @dragstart="dragged = row.node.layer.id"
+        @dragend="dragged = ''"
         @dragover.prevent
-        @drop.prevent="reorder(l.id)"
+        @drop.prevent="reorder(row.node.layer.id)"
       >
         <button
-          class="layer-select"
-          role="option"
-          :aria-selected="store.selected.includes(l.id)"
-          @click="store.select(l.id, $event.shiftKey || $event.ctrlKey || $event.metaKey)"
+          v-if="row.node.children.length"
+          type="button"
+          class="tree-toggle"
+          :aria-label="(isExpanded(row.node.layer.id) ? '收起 ' : '展开 ') + row.node.layer.name"
+          :title="search.trim() ? '搜索时自动展开' : undefined"
+          :disabled="!!search.trim()"
+          tabindex="-1"
+          @click="toggle(row.node.layer.id)"
         >
-          <el-icon><Picture /></el-icon><span>{{ l.name }}</span>
+          <el-icon><ArrowDown v-if="isExpanded(row.node.layer.id)" /><ArrowRight v-else /></el-icon>
+        </button>
+        <span v-else class="tree-toggle-placeholder" aria-hidden="true" />
+        <button
+          :id="`layer-tree-${row.node.layer.id}`"
+          class="layer-select"
+          role="treeitem"
+          :aria-level="row.depth + 1"
+          :aria-posinset="row.position"
+          :aria-setsize="row.setSize"
+          :aria-expanded="row.node.children.length ? isExpanded(row.node.layer.id) : undefined"
+          :aria-selected="store.selected.includes(row.node.layer.id)"
+          :tabindex="row.node.layer.id === tabStopId ? 0 : -1"
+          @focus="focused = row.node.layer.id"
+          @keydown="navigate($event, row)"
+          @click="selectLayer(row.node.layer.id, $event)"
+        >
+          <el-icon><TextIcon v-if="row.node.layer.type === 'text'" /><Picture v-else /></el-icon
+          ><span>{{ row.node.layer.name }}</span>
         </button>
         <IconButton
-          :label="(l.hidden ? '显示 ' : '隐藏 ') + l.name"
-          :icon="l.hidden ? Hide : View"
-          @click="store.mutate(() => (l.hidden = !l.hidden))"
+          :label="(row.node.layer.hidden ? '显示 ' : '隐藏 ') + row.node.layer.name"
+          :icon="row.node.layer.hidden ? Hide : View"
+          @click="store.mutate(() => (row.node.layer.hidden = !row.node.layer.hidden))"
         /><IconButton
-          :label="(l.locked ? '解锁 ' : '锁定 ') + l.name"
-          :icon="l.locked ? Lock : Unlock"
-          @click="store.mutate(() => (l.locked = !l.locked))"
+          :label="(row.node.layer.locked ? '解锁 ' : '锁定 ') + row.node.layer.name"
+          :icon="row.node.layer.locked ? Lock : Unlock"
+          @click="store.mutate(() => (row.node.layer.locked = !row.node.layer.locked))"
         />
       </div>
       <p v-if="!rows.length" class="empty-panel">
@@ -156,7 +329,7 @@ function reorder(id: string) {
       </p>
     </div>
     <footer class="panel-caption">
-      {{ store.layers.length }} 个图层<span>Shift 多选 · 拖动排序</span>
+      {{ store.layers.length }} 个图层<span>拖动调整叠放 · 层级由位置决定</span>
     </footer>
   </div>
 </template>

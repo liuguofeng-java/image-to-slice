@@ -29,7 +29,27 @@ test('vision request uses configured model, only ROI, and maps downscaled result
           {
             message: {
               content: JSON.stringify({
-                elements: [{ name: 'icon', category: 'icon', x: 20, y: 10, width: 40, height: 20 }],
+                elements: [
+                  { name: 'icon', category: 'icon', x: 20, y: 10, width: 40, height: 20 },
+                  {
+                    name: 'title',
+                    category: 'text',
+                    x: 100,
+                    y: 40,
+                    width: 200,
+                    height: 50,
+                    text: {
+                      content: '开始游戏',
+                      fontFamily: '',
+                      fontSize: 20,
+                      fontWeight: 950,
+                      fill: 'not-a-color',
+                      lineHeight: 0,
+                      letterSpacing: 2,
+                      align: 'center',
+                    },
+                  },
+                ],
               }),
             },
           },
@@ -54,6 +74,14 @@ test('vision request uses configured model, only ROI, and maps downscaled result
     { x: rows[0].x, y: rows[0].y, width: rows[0].width, height: rows[0].height },
     { x: 140, y: 220, width: 80, height: 40 },
   );
+  assert.equal(rows[1].text?.content, '开始游戏');
+  assert.equal(rows[1].text?.fontSize, 40);
+  assert.equal(rows[1].text?.letterSpacing, 4);
+  assert.equal(rows[1].text?.fontFamily, 'sans-serif');
+  assert.equal(rows[1].text?.fontWeight, 400);
+  assert.equal(rows[1].text?.fill, '#000000');
+  assert.equal(rows[1].text?.lineHeight, 1.2);
+  assert.equal(rows[1].text?.align, 'center');
 });
 test('empty, malformed and oversized model results fail without retry', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'slice-provider-'));

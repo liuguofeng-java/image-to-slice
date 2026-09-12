@@ -19,6 +19,7 @@ import {
   Operation,
   Files,
   Check,
+  EditPen,
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useEditor } from './store';
@@ -35,7 +36,7 @@ const store = useEditor(),
   split = useSplit(),
   canvas = ref<InstanceType<typeof EditorCanvas>>(),
   input = ref<HTMLInputElement>(),
-  tool = ref<'select' | 'hand'>('select'),
+  tool = ref<'select' | 'hand' | 'text'>('select'),
   tab = ref('design'),
   zoom = ref(1),
   modelOpen = ref(false),
@@ -156,7 +157,7 @@ async function startSplit() {
     if (narrow.value) openDrawer('right');
   }
 }
-function chooseTool(next: 'select' | 'hand') {
+function chooseTool(next: 'select' | 'hand' | 'text') {
   void split.close();
   tool.value = next;
 }
@@ -224,6 +225,7 @@ function key(e: KeyboardEvent) {
     store.remove();
   } else if (e.key.toLowerCase() === 'v') chooseTool('select');
   else if (e.key.toLowerCase() === 'h') chooseTool('hand');
+  else if (e.key.toLowerCase() === 't') chooseTool('text');
   else if (e.key === '0') canvas.value?.fit();
   else if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
     e.preventDefault();
@@ -413,7 +415,12 @@ onBeforeUnmount(() => {
               <el-button
                 type="primary"
                 class="full-button"
-                :disabled="!store.single || store.single.hidden || store.single.locked"
+                :disabled="
+                  !store.single ||
+                  store.single.type !== 'image' ||
+                  store.single.hidden ||
+                  store.single.locked
+                "
                 @click="startSplit"
                 >进入框选</el-button
               >
@@ -442,6 +449,11 @@ onBeforeUnmount(() => {
           :icon="Rank"
           :active="currentTool === 'hand'"
           @click="chooseTool('hand')"
+        /><IconButton
+          label="文本 (T)"
+          :icon="EditPen"
+          :active="currentTool === 'text'"
+          @click="chooseTool('text')"
         /><span class="bar-divider" /><IconButton
           label="导入图片"
           :icon="Picture"
@@ -451,7 +463,13 @@ onBeforeUnmount(() => {
           label="AI 框选拆图"
           :icon="Crop"
           :active="currentTool === 'split'"
-          :disabled="!store.single || store.single.hidden || store.single.locked || store.exclusive"
+          :disabled="
+            !store.single ||
+            store.single.type !== 'image' ||
+            store.single.hidden ||
+            store.single.locked ||
+            store.exclusive
+          "
           @click="startSplit"
         /><span class="bar-divider" /><IconButton
           label="适应画布 (0)"

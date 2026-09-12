@@ -3,6 +3,7 @@ import { ElMessageBox } from 'element-plus';
 import { useEditor, clone } from './store';
 import { api } from './api';
 import { normalizeRect } from './geometry';
+import { defaultTextStyle } from './text';
 import type { Candidate, Rect, Job, Document } from './types';
 
 /** 管理一次框选会话；候选是临时草稿，仅 apply 成功才改变项目。 */
@@ -23,7 +24,10 @@ export function useSplit() {
     signature = '',
     operationId = '',
     applyBefore: Document | null = null;
-  const source = computed(() => store.layers.find((l) => l.id === sourceId.value)),
+  const source = computed(() => {
+      const layer = store.layers.find((l) => l.id === sourceId.value);
+      return layer?.type === 'image' ? layer : undefined;
+    }),
     asset = computed(() => (source.value ? store.assets[source.value.assetId] : undefined));
   const valid = computed(() => !!source.value && !source.value.hidden && !source.value.locked),
     ready = computed(() => job.value?.status === 'ready');
@@ -165,6 +169,9 @@ export function useSplit() {
     if (!c) return;
     const r = region.value,
       next = { ...c, ...patch };
+    if (next.category === 'text' && !next.text)
+      next.text = defaultTextStyle(next.name === '切图' ? '' : next.name);
+    if (next.category !== 'text') delete next.text;
     next.x = Math.max(r.x, Math.min(r.x + r.width - 1, next.x));
     next.y = Math.max(r.y, Math.min(r.y + r.height - 1, next.y));
     next.width = Math.max(1, Math.min(next.width, r.x + r.width - next.x));
@@ -176,6 +183,15 @@ export function useSplit() {
   async function apply() {
     if (!ready.value || !valid.value || applying.value || !candidates.value.some((c) => c.enabled))
       return;
+    if (
+      candidates.value.some(
+        (candidate) =>
+          candidate.enabled && candidate.category === 'text' && !candidate.text?.content.trim(),
+      )
+    ) {
+      message.value = '文字候选必须填写文字内容。';
+      return;
+    }
     applying.value = true;
     store.exclusive = true;
     const token = serial;

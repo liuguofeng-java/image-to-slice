@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import sharp from 'sharp';
 import {
   documentSchema,
+  parseStoredDocument,
   idSchema,
   signature,
   uid,
@@ -65,7 +66,9 @@ export class Storage {
     }
   }
   async project(id: string) {
-    return this.read<Project>(join(this.root, 'projects', idSchema.parse(id) + '.json'));
+    const raw = await this.read<Project>(join(this.root, 'projects', idSchema.parse(id) + '.json'));
+    // 旧项目没有 type；Zod 默认把它规范化为 image，随后保存时写回新结构。
+    return { ...raw, ...parseStoredDocument(raw) };
   }
   async list() {
     return Promise.all(
@@ -92,7 +95,9 @@ export class Storage {
   }
   async validateDocument(doc: Document) {
     documentSchema.parse(doc);
-    for (const id of new Set(doc.scenes.flatMap((s) => s.layers.map((l) => l.assetId))))
+    for (const id of new Set(
+      doc.scenes.flatMap((s) => s.layers.filter((l) => l.type === 'image').map((l) => l.assetId)),
+    ))
       await this.asset(id);
   }
   /** 调用者必须持有项目 serial 锁；创建项目时尚无竞争者。 */

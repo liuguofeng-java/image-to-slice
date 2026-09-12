@@ -34,6 +34,7 @@ async function setup() {
         layers: [
           {
             id: 'l',
+            type: 'image',
             assetId: 'a',
             name: 'Image',
             x: 0,

@@ -4,13 +4,19 @@ import Konva from 'konva';
 import { useEditor } from '../store';
 import { imageUrl } from '../api';
 import { between, bounds, sourcePoint } from '../geometry';
-import type { Layer, Rect, Candidate } from '../types';
+import { buildLayerTree, layerPaintOrder } from '../layerTree';
+import { defaultTextStyle, effectiveFontFamily, fitTextLayer, textConfig } from '../text';
+import type { Layer, Rect, Candidate, ImageLayer, TextLayer, Document } from '../types';
+import type { LayerTree } from '../layerTree';
+
+// Konva 10 默认也允许中键启动节点拖拽；编辑器将中键完整保留给画布平移。
+Konva.dragButtons = [0];
 
 // 本组件只持有画布运行态：图片实例、Konva 引用、缩放和平移不进入保存/撤销快照。
 // 三种坐标：屏幕像素 → pointer() 的设计坐标 → sourcePoint() 的原图像素。
 const props = defineProps<{
-  tool: 'select' | 'hand' | 'split';
-  source?: Layer;
+  tool: 'select' | 'hand' | 'split' | 'text';
+  source?: ImageLayer;
   region: Rect | null;
   candidates: Candidate[];
   busy: boolean;
@@ -30,14 +36,40 @@ const store = useEditor(),
   images = shallowRef<Record<string, HTMLImageElement>>({}),
   space = ref(false),
   marquee = ref<Rect | null>(null),
-  drawing = ref<Rect | null>(null);
+  drawing = ref<Rect | null>(null),
+  textDrawing = ref<Rect | null>(null),
+  pointerPanning = ref(false),
+  textEditor = ref<HTMLTextAreaElement>(),
+  editing = ref<{ id: string; value: string; created: boolean; before?: Document } | null>(null);
 let observer: ResizeObserver,
   start: { x: number; y: number } | null = null,
   panStart: { x: number; y: number; vx: number; vy: number } | null = null,
   dragPositions: Record<string, { x: number; y: number }> = {},
+  dragLayerPositions: Record<string, { x: number; y: number }> = {},
+  dragBefore: Document | null = null,
+  dragTreeSnapshot: LayerTree | null = null,
   alive = true;
 const stage = () => stageRef.value?.getNode() as Konva.Stage;
 const visible = computed(() => store.layers.filter((l) => !l.hidden));
+const painted = computed(() => layerPaintOrder(store.layers).filter((layer) => !layer.hidden));
+// 拖动期间冻结父子关系，避免节点跨越边界时树在指针移动中跳动；结束后再按最终位置重算。
+const layerTree = computed(() => dragTreeSnapshot || buildLayerTree(store.layers));
+const hitLayers = computed(() => {
+  const depth = (id: string) => {
+    let value = 0,
+      parent = layerTree.value.parentById.get(id);
+    while (parent) {
+      value++;
+      parent = layerTree.value.parentById.get(parent);
+    }
+    return value;
+  };
+  // 命中层中更深的子节点最后绘制，从而优先接收鼠标事件；视觉层仍保持原叠放顺序。
+  return visible.value
+    .map((layer, index) => ({ layer, index, depth: depth(layer.id) }))
+    .sort((a, b) => a.depth - b.depth || a.index - b.index)
+    .map((entry) => entry.layer);
+});
 const sourceAsset = computed(() => (props.source ? store.assets[props.source.assetId] : undefined));
 // 候选框使用源像素坐标，共用图片的中心旋转/翻转变换，因此无需反复换算矩形。
 const overlay = computed(() => {
@@ -74,7 +106,7 @@ const rulerTicks = computed(() => {
   };
 });
 /** Konva 节点以中心定位；持久化 Layer 始终使用旋转前左上角。 */
-function config(l: Layer) {
+function baseConfig(l: Layer) {
   return {
     id: l.id,
     name: 'asset',
@@ -88,10 +120,43 @@ function config(l: Layer) {
     scaleX: l.flipX ? -1 : 1,
     scaleY: l.flipY ? -1 : 1,
     opacity: l.opacity,
+    draggable: false,
+    listening: false,
+  };
+}
+function imageConfig(l: ImageLayer) {
+  return { ...baseConfig(l), image: images.value[l.assetId], cornerRadius: l.radius };
+}
+function canvasTextConfig(l: TextLayer) {
+  return {
+    ...baseConfig(l),
+    ...textConfig(l),
+    width: l.width,
+    height: l.height,
+    visible: editing.value?.id !== l.id,
+  };
+}
+function nodeConfig(l: Layer) {
+  return l.type === 'image' ? imageConfig(l) : canvasTextConfig(l);
+}
+/** 透明命中节点与视觉图片分层，避免高层父图片挡住内部子图片。 */
+function hitConfig(l: Layer) {
+  return {
+    id: `hit-${l.id}`,
+    name: 'asset-hit',
+    x: l.x + l.width / 2,
+    y: l.y + l.height / 2,
+    width: l.width,
+    height: l.height,
+    offsetX: l.width / 2,
+    offsetY: l.height / 2,
+    rotation: l.rotation,
+    scaleX: l.flipX ? -1 : 1,
+    scaleY: l.flipY ? -1 : 1,
+    fill: '#000',
+    opacity: 0.001,
+    listening: !l.locked && props.tool === 'select' && editing.value?.id !== l.id,
     draggable: !l.locked && !store.exclusive && props.tool === 'select' && !space.value,
-    image: images.value[l.assetId],
-    listening: !l.locked,
-    cornerRadius: l.radius,
   };
 }
 function fit() {
@@ -136,7 +201,7 @@ watch(
   { immediate: true },
 );
 watch(
-  () => store.layers.map((l) => l.assetId),
+  () => store.layers.filter((l) => l.type === 'image').map((l) => l.assetId),
   async (ids) => {
     await Promise.all(
       [...new Set(ids)]
@@ -177,12 +242,143 @@ watch(
     if (!old && n) void nextTick(fit);
   },
 );
+const transformerOptions = computed(() => {
+  const layer = store.single;
+  const text = layer?.type === 'text' ? layer : undefined;
+  return {
+    borderStroke: '#a3e600',
+    anchorStroke: '#a3e600',
+    anchorFill: '#111',
+    anchorSize: 7,
+    rotateAnchorOffset: 24,
+    flipEnabled: false,
+    keepRatio: !!text,
+    ignoreStroke: true,
+    enabledAnchors:
+      text && text.resizeMode !== 'fixed'
+        ? ['top-left', 'top-right', 'bottom-left', 'bottom-right', 'middle-left', 'middle-right']
+        : undefined,
+    boundBoxFunc: (old: any, next: any) =>
+      Math.abs(next.width) < 2 || Math.abs(next.height) < 2 ? old : next,
+  };
+});
+const textEditorStyle = computed(() => {
+  const layer = editing.value
+    ? store.layers.find((item) => item.id === editing.value?.id && item.type === 'text')
+    : undefined;
+  if (!layer || layer.type !== 'text') return {};
+  const scale = view.value.scale;
+  return {
+    left: `${view.value.x + layer.x * scale}px`,
+    top: `${view.value.y + layer.y * scale}px`,
+    width: `${Math.max(24, layer.width * scale)}px`,
+    height: `${Math.max(layer.fontSize * layer.lineHeight * scale, layer.height * scale)}px`,
+    fontFamily: effectiveFontFamily(layer.fontFamily),
+    fontSize: `${layer.fontSize * scale}px`,
+    fontWeight: String(layer.fontWeight),
+    fontStyle: layer.fontStyle,
+    lineHeight: String(layer.lineHeight),
+    letterSpacing: `${layer.letterSpacing * scale}px`,
+    color: layer.fill,
+    textAlign: layer.align,
+    opacity: String(layer.opacity),
+    transform: `rotate(${layer.rotation}deg) scaleX(${layer.flipX ? -1 : 1}) scaleY(${layer.flipY ? -1 : 1})`,
+  };
+});
+function resizeTextEditor() {
+  const editor = textEditor.value,
+    layer = editing.value
+      ? store.layers.find((item) => item.id === editing.value?.id && item.type === 'text')
+      : undefined;
+  if (!editor || !layer || layer.type !== 'text') return;
+  if (layer.resizeMode === 'auto-width') {
+    const measure = new Konva.Text({
+      ...textConfig({ ...layer, content: editing.value?.value || '' }),
+    });
+    editor.style.width = `${Math.max(24, measure.width() * view.value.scale + 3)}px`;
+    editor.style.height = `${Math.max(layer.fontSize * layer.lineHeight * view.value.scale, measure.height() * view.value.scale + 3)}px`;
+    measure.destroy();
+  } else if (layer.resizeMode !== 'fixed') {
+    editor.style.height = 'auto';
+    editor.style.height = `${Math.max(layer.fontSize * layer.lineHeight * view.value.scale, editor.scrollHeight + 3)}px`;
+  }
+}
+async function editText(layer: TextLayer, created = false, before?: Document) {
+  if (layer.locked || layer.hidden || store.exclusive) return;
+  if (editing.value && editing.value.id !== layer.id) commitTextEdit();
+  store.select(layer.id);
+  editing.value = { id: layer.id, value: layer.content, created, before };
+  await nextTick();
+  textEditor.value?.focus();
+  if (created) textEditor.value?.select();
+  resizeTextEditor();
+  syncTransformer();
+}
+function commitTextEdit() {
+  const current = editing.value;
+  if (!current) return;
+  const layer = store.layers.find((item) => item.id === current.id);
+  editing.value = null;
+  if (!layer || layer.type !== 'text') return;
+  if (current.created && !current.value.trim()) {
+    store.mutate(() => {
+      store.scene!.layers = store.layers.filter((item) => item.id !== layer.id);
+      store.selected = [];
+    }, current.before);
+  } else {
+    store.mutate(() => {
+      layer.content = current.value;
+      layer.name = current.value.trim().split(/\r?\n/)[0]?.slice(0, 200) || '文字';
+      fitTextLayer(layer);
+    }, current.before);
+  }
+  void nextTick(syncTransformer);
+}
+function textEditorKey(event: KeyboardEvent) {
+  if (event.isComposing) return;
+  if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+    event.preventDefault();
+    commitTextEdit();
+  } else if (event.key === 'Escape') {
+    event.preventDefault();
+    commitTextEdit();
+  }
+}
+function outsideTextEditor(event: PointerEvent) {
+  if (editing.value && event.target !== textEditor.value) commitTextEdit();
+}
+function createText(rect: Rect, dragged: boolean) {
+  const before = store.doc(),
+    style = defaultTextStyle(),
+    layer: TextLayer = {
+      id: crypto.randomUUID(),
+      type: 'text',
+      name: '文字',
+      x: rect.x,
+      y: rect.y,
+      width: dragged ? Math.max(24, rect.width) : 160,
+      height: dragged ? Math.max(28, rect.height) : 32,
+      rotation: 0,
+      flipX: false,
+      flipY: false,
+      opacity: 1,
+      hidden: false,
+      locked: false,
+      ...style,
+      resizeMode: dragged ? 'auto-height' : 'auto-width',
+    };
+  store.mutate(() => {
+    store.layers.push(layer);
+    store.selected = [layer.id];
+  });
+  void editText(layer, true, before);
+}
 function syncTransformer() {
   const s = stage(),
     tr = transformer.value?.getNode();
   if (!s || !tr) return;
   tr.nodes(
-    props.tool === 'select'
+    props.tool === 'select' && !editing.value
       ? store.selection
           .filter((l) => !l.locked && !l.hidden)
           .map((l) => s.findOne('#' + l.id))
@@ -195,11 +391,46 @@ function pointer() {
   const p = stage().getPointerPosition()!;
   return { x: (p.x - view.value.x) / view.value.scale, y: (p.y - view.value.y) / view.value.scale };
 }
+function hostPointer(e: PointerEvent) {
+  const rect = host.value!.getBoundingClientRect();
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+// 在 DOM 捕获阶段接管平移手势，避免 Konva 节点、Transformer 或候选框抢先启动拖拽。
+function middleDown(e: PointerEvent) {
+  const panButton = e.button === 1 || (e.button === 0 && (space.value || props.tool === 'hand'));
+  if (!panButton || store.exclusive) return;
+  const p = hostPointer(e);
+  panStart = { ...p, vx: view.value.x, vy: view.value.y };
+  pointerPanning.value = true;
+  (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+  e.preventDefault();
+  e.stopPropagation();
+}
+function middleMove(e: PointerEvent) {
+  if (!pointerPanning.value || !panStart) return;
+  const p = hostPointer(e);
+  view.value = {
+    ...view.value,
+    x: panStart.vx + p.x - panStart.x,
+    y: panStart.vy + p.y - panStart.y,
+  };
+  e.preventDefault();
+  e.stopPropagation();
+}
+function middleUp(e: PointerEvent) {
+  if (!pointerPanning.value) return;
+  panStart = null;
+  pointerPanning.value = false;
+  (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+  e.preventDefault();
+  e.stopPropagation();
+}
 function down(e: any) {
   if (store.exclusive) return;
   const p = stage().getPointerPosition()!;
   if (space.value || props.tool === 'hand' || e.evt.button === 1) {
     panStart = { ...p, vx: view.value.x, vy: view.value.y };
+    pointerPanning.value = true;
     e.evt.preventDefault();
     return;
   }
@@ -208,6 +439,12 @@ function down(e: any) {
       return;
     start = sourcePoint(props.source, sourceAsset.value, pointer().x, pointer().y);
     drawing.value = null;
+    return;
+  }
+  if (props.tool === 'text') {
+    start = pointer();
+    textDrawing.value = null;
+    e.evt.preventDefault();
     return;
   }
   if (e.target === stage()) {
@@ -232,15 +469,22 @@ function move() {
       start,
       sourcePoint(props.source, sourceAsset.value, pointer().x, pointer().y),
     );
+  else if (props.tool === 'text') textDrawing.value = between(start, pointer());
   else marquee.value = between(start, pointer());
 }
 function up() {
   if (panStart) {
     panStart = null;
+    pointerPanning.value = false;
     return;
   }
   if (drawing.value && drawing.value.width >= 1 && drawing.value.height >= 1)
     emit('region', drawing.value);
+  if (props.tool === 'text' && start) {
+    const rect = textDrawing.value || { x: start.x, y: start.y, width: 0, height: 0 },
+      dragged = rect.width >= 4 && rect.height >= 4;
+    createText(dragged ? rect : { x: start.x, y: start.y, width: 160, height: 32 }, dragged);
+  }
   if (marquee.value) {
     const r = marquee.value;
     store.selected = [
@@ -264,18 +508,45 @@ function up() {
   start = null;
   marquee.value = null;
   drawing.value = null;
+  textDrawing.value = null;
 }
 function select(e: any, l: Layer) {
-  if (props.tool !== 'select' || space.value || l.locked) return;
+  if (
+    props.tool !== 'select' ||
+    space.value ||
+    l.locked ||
+    (typeof e.evt.button === 'number' && e.evt.button !== 0)
+  )
+    return;
   e.cancelBubble = true;
   store.select(l.id, e.evt.shiftKey || e.evt.ctrlKey || e.evt.metaKey);
+}
+function doubleClick(e: any, layer: Layer) {
+  if (props.tool !== 'select' || layer.type !== 'text' || layer.locked) return;
+  e.cancelBubble = true;
+  void editText(layer);
 }
 function dragStart(e: any, l: Layer) {
   if (!store.selected.includes(l.id)) store.select(l.id);
   dragPositions = {};
-  for (const item of store.selection) {
-    const node = stage().findOne('#' + item.id);
-    if (node && !item.locked) dragPositions[item.id] = { x: node.x(), y: node.y() };
+  dragLayerPositions = {};
+  dragBefore = store.doc();
+  dragTreeSnapshot = buildLayerTree(store.layers);
+  const tree = dragTreeSnapshot,
+    moving = new Set<string>();
+  const includeSubtree = (id: string) => {
+    if (moving.has(id)) return;
+    moving.add(id);
+    for (const child of tree.nodesById.get(id)?.children || []) includeSubtree(child.layer.id);
+  };
+  // 顶层选中项仍遵守自身锁定；一旦父图层可拖动，其完整子树保持相对位置。
+  for (const item of store.selection) if (!item.locked) includeSubtree(item.id);
+  for (const id of moving) {
+    const item = store.layers.find((layer) => layer.id === id),
+      node = stage().findOne('#' + id);
+    if (!item) continue;
+    dragLayerPositions[id] = { x: item.x, y: item.y };
+    if (node) dragPositions[id] = { x: node.x(), y: node.y() };
   }
 }
 function dragMove(e: any, l: Layer) {
@@ -284,22 +555,48 @@ function dragMove(e: any, l: Layer) {
   const dx = e.target.x() - origin.x,
     dy = e.target.y() - origin.y;
   for (const [id, p] of Object.entries(dragPositions)) {
-    if (id !== l.id)
-      stage()
-        .findOne('#' + id)
-        ?.position({ x: p.x + dx, y: p.y + dy });
+    stage()
+      .findOne('#' + id)
+      ?.position({ x: p.x + dx, y: p.y + dy });
   }
+  // 同步更新持久化图层，使属性面板和画布在拖动过程中都反映子树的实时位置。
+  store.mutate(() => {
+    for (const [id, position] of Object.entries(dragLayerPositions)) {
+      const layer = store.layers.find((item) => item.id === id);
+      if (layer) Object.assign(layer, { x: position.x + dx, y: position.y + dy });
+    }
+  }, dragBefore || undefined);
+}
+function commitDrag(e: any, l: Layer) {
+  const origin = dragPositions[l.id],
+    dx = origin ? e.target.x() - origin.x : 0,
+    dy = origin ? e.target.y() - origin.y : 0;
+  store.mutate(() => {
+    for (const [id, position] of Object.entries(dragLayerPositions)) {
+      const layer = store.layers.find((item) => item.id === id);
+      if (layer) Object.assign(layer, { x: position.x + dx, y: position.y + dy });
+    }
+  });
+  dragPositions = {};
+  dragLayerPositions = {};
+  dragBefore = null;
+  dragTreeSnapshot = null;
+  void nextTick(syncTransformer);
 }
 /** 拖动/变换结束才提交一步。Konva 的 scale 需折回尺寸，翻转仅保留正负号。 */
 function commit() {
+  const activeAnchor = transformer.value?.getNode()?.getActiveAnchor?.() || '',
+    corner = /^(top|bottom)-(left|right)$/.test(activeAnchor);
   store.mutate(() => {
     for (const l of store.selection) {
       const n = stage().findOne('#' + l.id);
       if (!n || l.locked) continue;
-      const width = n.width() * Math.abs(n.scaleX()),
-        height = n.height() * Math.abs(n.scaleY());
+      const scaleX = Math.abs(n.scaleX()),
+        scaleY = Math.abs(n.scaleY()),
+        width = n.width() * scaleX,
+        height = n.height() * scaleY;
       if (width > 16384 || height > 16384 || width * height > 32e6) {
-        n.setAttrs(config(l));
+        n.setAttrs(nodeConfig(l));
         emit('error', '图层尺寸超过限制');
         continue;
       }
@@ -312,6 +609,17 @@ function commit() {
         flipX: n.scaleX() < 0,
         flipY: n.scaleY() < 0,
       });
+      if (l.type === 'text') {
+        if (corner) {
+          l.fontSize = Math.max(1, Math.min(2048, l.fontSize * scaleY));
+          l.letterSpacing *= scaleY;
+        } else if (activeAnchor === 'middle-left' || activeAnchor === 'middle-right') {
+          l.resizeMode = 'auto-height';
+        } else if (activeAnchor === 'top-center' || activeAnchor === 'bottom-center') {
+          l.resizeMode = 'fixed';
+        }
+        fitTextLayer(l);
+      }
       n.scale({ x: l.flipX ? -1 : 1, y: l.flipY ? -1 : 1 });
       n.width(width);
       n.height(height);
@@ -329,7 +637,9 @@ function key(e: KeyboardEvent) {
   }
 }
 function blur() {
+  commitTextEdit();
   space.value = false;
+  pointerPanning.value = false;
   start = null;
   panStart = null;
 }
@@ -346,6 +656,7 @@ onMounted(() => {
   window.addEventListener('keydown', key);
   window.addEventListener('keyup', key);
   window.addEventListener('blur', blur);
+  window.addEventListener('pointerdown', outsideTextEditor, true);
   void nextTick(fit);
 });
 onBeforeUnmount(() => {
@@ -354,6 +665,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', key);
   window.removeEventListener('keyup', key);
   window.removeEventListener('blur', blur);
+  window.removeEventListener('pointerdown', outsideTextEditor, true);
 });
 defineExpose({ fit, zoom });
 </script>
@@ -361,8 +673,17 @@ defineExpose({ fit, zoom });
   <div
     ref="host"
     class="canvas-host"
-    :class="{ 'is-panning': space || tool === 'hand', 'is-splitting': tool === 'split' }"
+    :class="{
+      'is-panning': space || tool === 'hand' || pointerPanning,
+      'is-panning-active': pointerPanning,
+      'is-splitting': tool === 'split',
+      'is-typing': tool === 'text',
+    }"
     data-testid="canvas"
+    @pointerdown.capture="middleDown"
+    @pointermove.capture="middleMove"
+    @pointerup.capture="middleUp"
+    @pointercancel.capture="middleUp"
   >
     <v-stage
       ref="stageRef"
@@ -381,32 +702,25 @@ defineExpose({ fit, zoom });
       "
     >
       <v-layer>
-        <v-image
-          v-for="l in visible"
+        <v-rect
+          v-for="l in hitLayers"
           :key="l.id"
-          :config="config(l)"
+          :config="hitConfig(l)"
           @click="(e: any) => select(e, l)"
           @tap="(e: any) => select(e, l)"
+          @dblclick="(e: any) => doubleClick(e, l)"
+          @dbltap="(e: any) => doubleClick(e, l)"
           @dragstart="(e: any) => dragStart(e, l)"
           @dragmove="(e: any) => dragMove(e, l)"
-          @dragend="commit"
+          @dragend="(e: any) => commitDrag(e, l)"
         />
-        <v-transformer
-          ref="transformer"
-          :config="{
-            borderStroke: '#a3e600',
-            anchorStroke: '#a3e600',
-            anchorFill: '#111',
-            anchorSize: 7,
-            rotateAnchorOffset: 24,
-            flipEnabled: false,
-            keepRatio: false,
-            ignoreStroke: true,
-            boundBoxFunc: (old: any, next: any) =>
-              Math.abs(next.width) < 2 || Math.abs(next.height) < 2 ? old : next,
-          }"
-          @transformend="commit"
-        />
+      </v-layer>
+      <v-layer>
+        <template v-for="l in painted" :key="l.id">
+          <v-image v-if="l.type === 'image'" :config="imageConfig(l)" />
+          <v-text v-else :config="canvasTextConfig(l)" />
+        </template>
+        <v-transformer ref="transformer" :config="transformerOptions" @transformend="commit" />
         <v-rect
           v-if="marquee"
           :config="{
@@ -414,6 +728,17 @@ defineExpose({ fit, zoom });
             fill: '#a3e60022',
             stroke: '#a3e600',
             strokeWidth: 1 / view.scale,
+            listening: false,
+          }"
+        />
+        <v-rect
+          v-if="textDrawing"
+          :config="{
+            ...textDrawing,
+            fill: '#a3e60012',
+            stroke: '#a3e600',
+            strokeWidth: 1 / view.scale,
+            dash: [6 / view.scale, 4 / view.scale],
             listening: false,
           }"
         />
@@ -451,6 +776,17 @@ defineExpose({ fit, zoom });
         </v-group>
       </v-layer>
     </v-stage>
+    <textarea
+      v-if="editing"
+      ref="textEditor"
+      v-model="editing.value"
+      class="canvas-text-editor"
+      :style="textEditorStyle"
+      aria-label="编辑画布文字"
+      spellcheck="false"
+      @input="resizeTextEditor"
+      @keydown="textEditorKey"
+    />
     <div class="ruler ruler-top" aria-hidden="true">
       <span v-for="t in rulerTicks.horizontal" :key="t.value" :style="{ left: t.pos + 'px' }">{{
         t.value
@@ -468,6 +804,9 @@ defineExpose({ fit, zoom });
     </div>
     <div v-if="tool === 'split'" class="canvas-hint">
       在图片上拖动框选 · 候选框可拖动 · 参数以原图像素为准
+    </div>
+    <div v-if="tool === 'text' && !editing" class="canvas-hint">
+      点击创建自动宽度文字 · 拖动创建自动高度文本框
     </div>
   </div>
 </template>

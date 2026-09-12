@@ -10,19 +10,40 @@ export interface Asset {
   height: number;
   name: string;
 }
-export interface Layer extends Rect {
+export type TextResizeMode = 'auto-width' | 'auto-height' | 'fixed';
+export interface LayerBase extends Rect {
   id: string;
-  assetId: string;
   name: string;
   rotation: number;
   flipX: boolean;
   flipY: boolean;
   opacity: number;
-  radius: number;
   hidden: boolean;
   locked: boolean;
   source?: { layerId: string; rect: Rect };
 }
+export interface ImageLayer extends LayerBase {
+  type: 'image';
+  assetId: string;
+  radius: number;
+}
+export interface TextStyle {
+  content: string;
+  fontFamily: string;
+  fontSize: number;
+  fontWeight: number;
+  fontStyle: 'normal' | 'italic';
+  fill: string;
+  align: 'left' | 'center' | 'right';
+  verticalAlign: 'top' | 'middle' | 'bottom';
+  lineHeight: number;
+  letterSpacing: number;
+  resizeMode: TextResizeMode;
+}
+export interface TextLayer extends LayerBase, TextStyle {
+  type: 'text';
+}
+export type Layer = ImageLayer | TextLayer;
 export interface Scene {
   id: string;
   name: string;
@@ -45,6 +66,7 @@ export interface Candidate extends Rect {
   name: string;
   category: 'image' | 'icon' | 'text' | 'background';
   enabled: boolean;
+  text?: TextStyle;
 }
 export interface Job {
   id: string;

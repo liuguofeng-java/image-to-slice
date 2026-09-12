@@ -42,8 +42,29 @@ async function image(page: Page, width = 804, height = 2230) {
     mimeType: 'image/png',
     buffer: Buffer.from(data, 'base64'),
   });
-  await expect(page.getByRole('option', { name: '探索民宿', exact: true })).toBeVisible();
+  await expect(page.getByRole('treeitem', { name: '探索民宿', exact: true })).toBeVisible();
   await expect(page.getByLabel('图层名称')).toHaveValue('探索民宿');
+  await expect(page.getByRole('button', { name: '已保存', exact: true })).toBeVisible();
+}
+async function solidImage(page: Page, name: string, width: number, height: number) {
+  const data = await page.evaluate(
+    ({ width, height }) => {
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext('2d')!;
+      context.fillStyle = '#54705f';
+      context.fillRect(0, 0, width, height);
+      return canvas.toDataURL().split(',')[1];
+    },
+    { width, height },
+  );
+  await page.getByLabel('选择导入图片').setInputFiles({
+    name: `${name}.png`,
+    mimeType: 'image/png',
+    buffer: Buffer.from(data, 'base64'),
+  });
+  await expect(page.getByRole('treeitem', { name, exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '已保存', exact: true })).toBeVisible();
 }
 test('import, properties, undo, lock, multi-select, export, and refresh', async ({ page }) => {
@@ -59,11 +80,13 @@ test('import, properties, undo, lock, multi-select, export, and refresh', async 
   await page.getByRole('button', { name: '重做 (Ctrl+Shift+Z)', exact: true }).click();
   await expect(page.getByLabel('X 位置')).toHaveValue('123.50');
   await page.getByRole('button', { name: '复制', exact: true }).click();
-  await expect(page.getByRole('option')).toHaveCount(2);
+  await expect(page.getByRole('treeitem')).toHaveCount(2);
   await page.getByRole('button', { name: '锁定图层', exact: true }).click();
   await expect(page.getByLabel('X 位置')).toBeDisabled();
   await page.getByRole('button', { name: '解锁图层', exact: true }).click();
-  await page.getByRole('option', { name: '探索民宿', exact: true }).click({ modifiers: ['Shift'] });
+  await page
+    .getByRole('treeitem', { name: '探索民宿', exact: true })
+    .click({ modifiers: ['Shift'] });
   await expect(page.getByRole('button', { name: '左对齐', exact: true })).toBeEnabled();
   await page.getByRole('button', { name: '左对齐', exact: true }).click();
   const download = page.waitForEvent('download');
@@ -71,7 +94,7 @@ test('import, properties, undo, lock, multi-select, export, and refresh', async 
   expect((await download).suggestedFilename()).toBe('slices.zip');
   await expect(page.getByRole('button', { name: '已保存', exact: true })).toBeVisible();
   await page.reload();
-  await expect(page.getByRole('option')).toHaveCount(2);
+  await expect(page.getByRole('treeitem')).toHaveCount(2);
   const saved = (await (
     await page.request.get(backend + '/api/v1/projects/' + p.id)
   ).json()) as Project;
@@ -95,22 +118,30 @@ test('AI confirm, candidate editing, transactional apply, undo and original reta
   await expect(page.getByText('320 × 200 px', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '开始 AI 分析', exact: true }).click();
   await expect(page.getByText(/远程服务可能计费/)).toBeVisible();
+  const confirmBox = page.locator('.el-message-box');
+  await expect(confirmBox).toBeVisible();
+  expect((await confirmBox.boundingBox())!.width).toBeLessThanOrEqual(440);
   await page.getByRole('button', { name: '发送并分析', exact: true }).click();
   await expect(page.getByLabel('候选 1 名称')).toHaveValue('标题区域');
   await page.getByLabel('候选 1 名称').fill('标题切片');
   await page.getByLabel('候选 1 名称').press('Enter');
+  await expect(page.getByLabel('候选 1 文字内容')).toHaveValue('探索自然');
+  await page.getByLabel('候选 1 文字内容').fill('开始游戏');
   await page.screenshot({ path: info.outputPath('ai-candidates.png') });
   await page.getByRole('button', { name: '创建 1 个图层', exact: true }).click();
-  await expect(page.getByRole('option')).toHaveCount(2);
-  await expect(page.getByRole('option', { name: '探索民宿', exact: true })).toBeVisible();
+  await expect(page.getByRole('treeitem')).toHaveCount(2);
+  await expect(page.getByRole('treeitem', { name: '探索民宿', exact: true })).toBeVisible();
   const result = (await (
     await page.request.get(backend + '/api/v1/projects/' + p.id)
   ).json()) as Project;
   expect(result.scenes[0].layers[1].source?.rect).toEqual({ x: 0, y: 0, width: 160, height: 66 });
   expect(result.scenes[0].layers[1].rotation).toBe(37);
   expect(result.scenes[0].layers[1].flipX).toBe(true);
+  expect(result.scenes[0].layers[1].type).toBe('text');
+  if (result.scenes[0].layers[1].type === 'text')
+    expect(result.scenes[0].layers[1].content).toBe('开始游戏');
   await page.getByRole('button', { name: '撤销 (Ctrl+Z)', exact: true }).click();
-  await expect(page.getByRole('option')).toHaveCount(1);
+  await expect(page.getByRole('treeitem')).toHaveCount(1);
 });
 test('manual candidates and save failure retain content for retry', async ({ page }) => {
   await fresh(page);
@@ -125,9 +156,9 @@ test('manual candidates and save failure retain content for retry', async ({ pag
   await page.getByRole('button', { name: '添加候选框' }).click();
   await expect(page.getByLabel('候选 2 名称')).toBeVisible();
   await page.getByRole('button', { name: '创建 2 个图层', exact: true }).click();
-  await expect(page.getByRole('option')).toHaveCount(3);
+  await expect(page.getByRole('treeitem')).toHaveCount(3);
   await page.getByRole('tab', { name: '设计', exact: true }).click();
-  await page.getByRole('option', { name: '探索民宿', exact: true }).click();
+  await page.getByRole('treeitem', { name: '探索民宿', exact: true }).click();
   await page.route('**/api/v1/projects/*', (route) =>
     route.request().method() === 'PUT'
       ? route.fulfill({
@@ -144,6 +175,89 @@ test('manual candidates and save failure retain content for retry', async ({ pag
   await page.unroute('**/api/v1/projects/*');
   await page.getByRole('button', { name: '保存失败', exact: true }).click();
   await expect(page.getByRole('button', { name: '已保存', exact: true })).toBeVisible();
+});
+test('automatic layer tree supports collapse, search, keyboard navigation and reparenting', async ({
+  page,
+}, info) => {
+  const project = await fresh(page);
+  await solidImage(page, 'parent', 200, 200);
+  await solidImage(page, 'child', 50, 50);
+  const parent = page.getByRole('treeitem', { name: 'parent', exact: true }),
+    child = page.getByRole('treeitem', { name: 'child', exact: true }),
+    search = page.getByLabel('搜索图层');
+
+  await expect(parent).toHaveAttribute('aria-level', '1');
+  await expect(parent).toHaveAttribute('aria-expanded', 'true');
+  await expect(child).toHaveAttribute('aria-level', '2');
+  const parentBox = await parent.boundingBox(),
+    childBox = await child.boundingBox(),
+    collapse = page.getByRole('button', { name: '收起 parent', exact: true });
+  expect(childBox!.x).toBeGreaterThan(parentBox!.x + 10);
+  await page.getByRole('button', { name: '全部收起图层树', exact: true }).click();
+  await expect(child).toBeHidden();
+  await page.getByRole('button', { name: '全部展开图层树', exact: true }).click();
+  await expect(child).toBeVisible();
+  await collapse.hover();
+  expect(await collapse.evaluate((element) => getComputedStyle(element).backgroundColor)).toBe(
+    'rgba(0, 0, 0, 0)',
+  );
+  await page.screenshot({ path: info.outputPath('layer-tree.png') });
+  await collapse.click();
+  await expect(child).toBeHidden();
+
+  await search.fill('child');
+  await expect(parent).toBeVisible();
+  await expect(child).toBeVisible();
+  await expect(page.getByRole('button', { name: '收起 parent', exact: true })).toBeDisabled();
+  await search.fill('');
+  await expect(child).toBeHidden();
+
+  await parent.focus();
+  await parent.press('ArrowRight');
+  await expect(child).toBeVisible();
+  await parent.press('ArrowRight');
+  await expect(child).toBeFocused();
+  await child.press('ArrowLeft');
+  await expect(parent).toBeFocused();
+  await child.click();
+  await expect(page.getByLabel('X 位置')).toHaveValue('0.00');
+
+  await page.getByRole('button', { name: '隐藏 parent', exact: true }).click();
+  await expect(child).toHaveAttribute('aria-level', '2');
+  await page.getByRole('button', { name: '锁定 parent', exact: true }).click();
+  await expect(child).toHaveAttribute('aria-level', '2');
+
+  await child.click();
+  await page.getByLabel('X 位置').fill('260');
+  await page.getByLabel('X 位置').press('Enter');
+  await expect(child).toHaveAttribute('aria-level', '1');
+  await page.getByLabel('X 位置').fill('20');
+  await page.getByLabel('X 位置').press('Enter');
+  await expect(child).toHaveAttribute('aria-level', '2');
+
+  await page.getByRole('button', { name: '收起 parent', exact: true }).click();
+  await expect(child).toBeHidden();
+  await page.getByTestId('canvas').click({ position: { x: 800, y: 650 } });
+  await page.getByTestId('canvas').click({ position: { x: 530, y: 250 } });
+  await expect(child).toBeVisible();
+  await expect(child).toHaveAttribute('aria-selected', 'true');
+
+  await page.getByRole('button', { name: '解锁 parent', exact: true }).click();
+  await child.locator('..').dragTo(parent.locator('..'));
+  await expect(page.getByRole('button', { name: '已保存', exact: true })).toBeVisible();
+  const saved = (await (
+    await page.request.get(`${backend}/api/v1/projects/${project.id}`)
+  ).json()) as Project;
+  expect(saved.scenes[0].layers.map((layer) => layer.name)).toEqual(['child', 'parent']);
+
+  await page.reload();
+  await expect(page.getByRole('treeitem', { name: 'child', exact: true })).toHaveAttribute(
+    'aria-level',
+    '2',
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole('button', { name: '打开图层面板', exact: true }).click();
+  await page.screenshot({ path: info.outputPath('layer-tree-390.png') });
 });
 test('model config uses standalone contract and never returns API key', async ({ page }) => {
   await fresh(page);

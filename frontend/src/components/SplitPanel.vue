@@ -2,12 +2,52 @@
 import { computed } from 'vue';
 import { Plus, Delete } from '@element-plus/icons-vue';
 import { imageUrl } from '../api';
+import { availableSystemFonts } from '../text';
+import { numberScrub } from '../directives/numberScrub';
 import type { SplitController } from '../useSplit';
-import type { Candidate } from '../types';
+import type { Candidate, TextStyle } from '../types';
 import IconButton from './IconButton.vue';
 const props = defineProps<{ controller: SplitController }>();
+const vNumberScrub = numberScrub;
 const c = props.controller;
-const enabled = computed(() => c.candidates.value.filter((x) => x.enabled).length);
+const enabled = computed(() => c.candidates.value.filter((x) => x.enabled).length),
+  invalidText = computed(() =>
+    c.candidates.value.some(
+      (row) => row.enabled && row.category === 'text' && !row.text?.content.trim(),
+    ),
+  ),
+  fonts = availableSystemFonts();
+let scrubbing = false;
+function beginScrub() {
+  scrubbing = true;
+}
+function endScrub() {
+  scrubbing = false;
+}
+function previewCandidate(row: Candidate, patch: Partial<Candidate>) {
+  if (scrubbing) c.edit(row.id, patch);
+}
+function editText(row: Candidate, patch: Partial<TextStyle>) {
+  if (row.text) c.edit(row.id, { text: { ...row.text, ...patch } });
+}
+function previewText(row: Candidate, patch: Partial<TextStyle>) {
+  if (scrubbing) editText(row, patch);
+}
+function scrubInput(event: CustomEvent<number>) {
+  const target = event.target as HTMLElement,
+    value = event.detail,
+    key = target.dataset.scrubKey,
+    id = target.dataset.scrubId;
+  if (!id || !key || !Number.isFinite(value)) return;
+  const row = c.candidates.value.find((candidate) => candidate.id === id);
+  if (!row) return;
+  if (target.dataset.scrubScope === 'candidate') previewCandidate(row, { [key]: value });
+  else if (target.dataset.scrubScope === 'candidate-text') {
+    if (key === 'fontSize') previewText(row, { fontSize: value });
+    if (key === 'lineHeight') previewText(row, { lineHeight: value });
+    if (key === 'letterSpacing') previewText(row, { letterSpacing: value });
+  }
+}
 function thumbnail(row: Candidate) {
   const a = c.asset.value;
   if (!a) return {};
@@ -19,13 +59,18 @@ function thumbnail(row: Candidate) {
 }
 </script>
 <template>
-  <div class="split-panel">
+  <div
+    class="split-panel"
+    @numberscrubstart="beginScrub"
+    @numberscrubinput="scrubInput"
+    @numberscrubend="endScrub"
+  >
     <section class="property-section">
       <div class="section-heading">
         <h2>AI 框选拆图</h2>
         <span class="badge">原像素</span>
       </div>
-      <p class="hint">识别矩形元素，裁成独立图片图层。不会抠图、补全背景或重绘。</p>
+      <p class="hint">识别矩形元素；文字会创建为可编辑文字图层，其他候选仍裁成图片。</p>
       <el-button
         v-if="!c.active.value"
         class="full-button"
@@ -97,10 +142,25 @@ function thumbnail(row: Candidate) {
             @click="c.candidates.value = c.candidates.value.filter((x) => x.id !== row.id)"
           />
         </div>
+        <el-select
+          :model-value="row.category"
+          :aria-label="'候选 ' + (i + 1) + ' 类型'"
+          :disabled="c.applying.value"
+          @change="(value: any) => c.edit(row.id, { category: value })"
+        >
+          <el-option label="图片" value="image" />
+          <el-option label="图标" value="icon" />
+          <el-option label="文字" value="text" />
+          <el-option label="背景" value="background" />
+        </el-select>
         <div class="field-grid">
           <label v-for="key in ['x', 'y', 'width', 'height'] as const" :key="key"
             ><span>{{ { x: 'X', y: 'Y', width: 'W', height: 'H' }[key] }}</span
             ><el-input-number
+              v-number-scrub="{ step: 1, precision: 0, min: 0, max: 16384 }"
+              data-scrub-scope="candidate"
+              :data-scrub-id="row.id"
+              :data-scrub-key="key"
               :model-value="row[key]"
               :precision="0"
               :controls="false"
@@ -109,6 +169,132 @@ function thumbnail(row: Candidate) {
               :disabled="c.applying.value"
               @change="(v: any) => c.edit(row.id, { [key]: v || 0 })"
           /></label>
+        </div>
+        <div v-if="row.category === 'text' && row.text" class="candidate-text-fields">
+          <el-input
+            :model-value="row.text.content"
+            type="textarea"
+            :rows="2"
+            resize="none"
+            :aria-label="'候选 ' + (i + 1) + ' 文字内容'"
+            placeholder="输入识别到的文字"
+            @input="(value: any) => editText(row, { content: String(value) })"
+          />
+          <div class="field-grid">
+            <label
+              ><span>字号</span
+              ><el-input-number
+                v-number-scrub="{ step: 1, precision: 1, min: 1, max: 2048 }"
+                data-scrub-scope="candidate-text"
+                :data-scrub-id="row.id"
+                data-scrub-key="fontSize"
+                :model-value="row.text.fontSize"
+                :controls="false"
+                :min="1"
+                :max="2048"
+                aria-label="文字字号"
+                @change="(value: any) => editText(row, { fontSize: value || 1 })"
+            /></label>
+            <label
+              ><span>字重</span
+              ><el-select
+                :model-value="row.text.fontWeight"
+                aria-label="文字字重"
+                @change="(value: any) => editText(row, { fontWeight: Number(value) })"
+              >
+                <el-option
+                  v-for="weight in [300, 400, 500, 600, 700, 800, 900]"
+                  :key="weight"
+                  :label="weight"
+                  :value="weight"
+                />
+              </el-select>
+            </label>
+          </div>
+          <label class="stacked-field">
+            <span>字体</span>
+            <el-select
+              :model-value="row.text.fontFamily"
+              filterable
+              aria-label="文字字体"
+              @change="(value: any) => editText(row, { fontFamily: String(value) })"
+            >
+              <el-option v-for="font in fonts" :key="font" :label="font" :value="font" />
+            </el-select>
+          </label>
+          <div class="field-grid">
+            <label
+              ><span>行高</span
+              ><el-input-number
+                v-number-scrub="{ step: 0.05, precision: 2, min: 0.5, max: 5 }"
+                data-scrub-scope="candidate-text"
+                :data-scrub-id="row.id"
+                data-scrub-key="lineHeight"
+                :model-value="row.text.lineHeight"
+                :controls="false"
+                :min="0.5"
+                :max="5"
+                :step="0.1"
+                aria-label="文字行高"
+                @change="(value: any) => editText(row, { lineHeight: value || 1.2 })"
+            /></label>
+            <label
+              ><span>字距</span
+              ><el-input-number
+                v-number-scrub="{ step: 0.1, precision: 1, min: -1000, max: 1000 }"
+                data-scrub-scope="candidate-text"
+                :data-scrub-id="row.id"
+                data-scrub-key="letterSpacing"
+                :model-value="row.text.letterSpacing"
+                :controls="false"
+                :min="-1000"
+                :max="1000"
+                aria-label="文字字距"
+                @change="(value: any) => editText(row, { letterSpacing: value || 0 })"
+            /></label>
+          </div>
+          <div class="candidate-text-controls">
+            <el-select
+              :model-value="row.text.resizeMode"
+              aria-label="文字框模式"
+              @change="(value: any) => editText(row, { resizeMode: value })"
+            >
+              <el-option label="自动宽度" value="auto-width" />
+              <el-option label="自动高度" value="auto-height" />
+              <el-option label="固定尺寸" value="fixed" />
+            </el-select>
+            <el-select
+              :model-value="row.text.align"
+              aria-label="文字对齐"
+              @change="(value: any) => editText(row, { align: value })"
+            >
+              <el-option label="左对齐" value="left" />
+              <el-option label="居中" value="center" />
+              <el-option label="右对齐" value="right" />
+            </el-select>
+            <el-select
+              :model-value="row.text.verticalAlign"
+              aria-label="文字垂直对齐"
+              @change="(value: any) => editText(row, { verticalAlign: value })"
+            >
+              <el-option label="顶部" value="top" />
+              <el-option label="居中" value="middle" />
+              <el-option label="底部" value="bottom" />
+            </el-select>
+            <el-color-picker
+              :model-value="row.text.fill"
+              show-alpha
+              color-format="hex"
+              aria-label="文字颜色"
+              @change="(value: any) => value && editText(row, { fill: value })"
+            />
+          </div>
+          <el-checkbox
+            :model-value="row.text.fontStyle === 'italic'"
+            @change="(value: any) => editText(row, { fontStyle: value ? 'italic' : 'normal' })"
+            >斜体</el-checkbox
+          >
+          <p v-if="!row.text.content.trim()" class="hint error">请输入文字内容后再创建。</p>
         </div>
         <small
           >{{ i + 1 }} ·
@@ -124,7 +310,7 @@ function thumbnail(row: Candidate) {
         type="primary"
         class="full-button"
         :loading="c.applying.value"
-        :disabled="!c.ready.value || !enabled"
+        :disabled="!c.ready.value || !enabled || invalidText"
         @click="c.apply"
         >创建 {{ enabled }} 个图层</el-button
       ><el-button class="full-button" :disabled="c.applying.value" @click="c.close"

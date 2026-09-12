@@ -8,18 +8,20 @@
 | --- | --- | --- |
 | `frontend/src/App.vue` | 页面组合、项目入口、快捷键、抽屉 | 不直接改图片字节；输入框/弹窗内不触发画布快捷键 |
 | `frontend/src/store.ts` | 项目状态、撤销、保存队列 | 持久化修改经过 `mutate`；快照不包含服务端版本号 |
-| `frontend/src/components/EditorCanvas.vue` | Konva 渲染、鼠标交互 | 拖动中只更新节点，结束后一次提交；图片实例不进 store |
+| `frontend/src/components/EditorCanvas.vue` | Konva 图层、DOM 文字编辑层、鼠标交互 | 拖动中只更新节点，结束后一次提交；图片实例和 textarea 状态不进 store |
+| `frontend/src/text.ts` | 文字默认样式、系统字体和 Konva 度量 | 自动宽高变更必须通过同一度量入口，缺失字体回退无衬线 |
+| `frontend/src/directives/numberScrub.ts` | Blender 式数值拖动 | 拖动中仅预览输入值，释放时提交一次；普通点击和键盘输入仍可用 |
 | `frontend/src/geometry.ts` | 原像素/设计坐标互换 | 不接收屏幕缩放倍率，正反变换必须互逆 |
 | `frontend/src/useSplit.ts` | 框选会话、轮询、候选、应用 | 每次异步返回检查会话令牌；不自动重试分析 |
-| `frontend/src/components/*Panel.vue` | 场景、图层、属性、候选的展示 | 调用 store/composable，不重复实现持久化 |
+| `frontend/src/components/*Panel.vue` | 场景、图层树、属性、候选的展示 | 调用 store/composable；图层树由几何信息推导，不写入持久化模型 |
 | `frontend/src/api.ts` / `types.ts` | 独立类型化 HTTP 客户端 | 密钥仅从设置输入发送，接口不读取已有明文密钥 |
 | `backend/src/app.ts` | Fastify 初始化、安全检查、通用路由 | 默认回环监听、来源限制；无生产测试开关 |
 | `backend/src/contracts.ts` | 请求 Schema 转换、响应白名单/OpenAPI | 私有密钥、幂等回执不进入公开响应 |
-| `backend/src/split-routes.ts` | 拆图任务和事务性应用 | 回执 → 状态/版本/来源校验 → 裁片 → 原子提交 |
+| `backend/src/split-routes.ts` | 拆图任务和事务性应用 | 回执 → 状态/版本/来源校验 → 图片裁片/文字图层 → 原子提交 |
 | `backend/src/storage.ts` | 唯一磁盘存储边界 | 图片不可变；项目串行锁；同目录临时文件原子替换 |
 | `backend/src/provider.ts` | 远程视觉请求和模型结果解析 | 只使用后端配置 URL；不自动重试、禁用重定向 |
 | `backend/src/domain.ts` | 数据校验、后端坐标及裁片位置 | 校验数量与尺寸；新图层继承源变换而非父子关系 |
-| `backend/src/exports.ts` | 原密度导出、场景合成 | 输出不含画布缩放/选区；先限制分配面积 |
+| `backend/src/exports.ts` | 图片原密度、Pango 文字渲染、场景合成 | 文字必须转义；输出不含画布缩放/选区；先限制分配面积 |
 
 ## 坐标与数据流
 
@@ -33,7 +35,11 @@
   → 后端 Sharp 裁切
 ```
 
-`Layer.x/y` 表示旋转前左上角，图片以中心旋转。`Layer.width/height` 是设计尺寸，`Asset.width/height` 是实际像素尺寸。不能混用；以后增加高清化或裁边也应维持这个约定。
+`Layer` 是以 `type` 判别的 `ImageLayer | TextLayer` 联合类型；旧项目读取时为无 `type` 的图层补上 `image`，保存后写入新结构。`Layer.x/y` 表示旋转前左上角，图层以中心旋转。`Layer.width/height` 是设计尺寸，`Asset.width/height` 是图片实际像素尺寸，文字没有 `assetId`。不能混用；以后增加高清化或裁边也应维持这个约定。
+
+图层面板的父子关系不是项目字段：`layerTree.ts` 使用变换后矩形四角做完整包含判断，选择面积最小的图片容器作为直接父级；文字可成为子层但不能作为容器。`scene.layers` 提供同级节点的原始叠放依据；画布与后端场景导出都按“父层先、子孙后”的有效顺序绘制，子层命中优先于覆盖它的父层。单分支及全部展开状态属于按场景保存的当前会话视图状态。
+
+文字编辑使用与画布平移、缩放、旋转和翻转同步的原生 `textarea`，以支持中文输入法、光标和选区。编辑中不逐键写入文档，提交时才合并为一次历史；后端用 Sharp 的 Pango 入口渲染转义后的纯文本，再复用通用变换、透明度和合成流程。
 
 ## 保存和撤销
 
