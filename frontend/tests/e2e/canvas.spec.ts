@@ -8,7 +8,7 @@ async function fixture(page: Page) {
   await page.goto('/editor');
   await page.evaluate((id) => localStorage.setItem('slice-studio-project', id), p.id);
   await page.reload();
-  await expect(page.getByRole('button', { name: '画布回归', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: /画布回归/ })).toBeVisible();
   const data = await page.evaluate(() => {
     const c = document.createElement('canvas');
     c.width = 320;
@@ -30,7 +30,7 @@ async function fixture(page: Page) {
 async function oneHundred(page: Page) {
   await page.getByLabel('画布缩放').click();
   await page.getByRole('menuitem', { name: '100%', exact: true }).click();
-  await expect(page.getByLabel('画布缩放')).toHaveText('100%⌄');
+  await expect(page.getByLabel('画布缩放')).toContainText('100%');
 }
 test('canvas drag, eight-anchor resize, pan and zoom have correct history', async ({ page }) => {
   await fixture(page);
@@ -80,7 +80,9 @@ test('canvas drag, eight-anchor resize, pan and zoom have correct history', asyn
 test('middle mouse pans from an object without moving or selecting it', async ({ page }) => {
   await fixture(page);
   await oneHundred(page);
-  const zeroTick = page.locator('.ruler-top span').filter({ hasText: /^0$/ }),
+  const zeroTick = page
+      .locator('.ruler-top > span:not(.selection-ruler-marker)')
+      .filter({ hasText: /^0$/ }),
     before = await zeroTick.boundingBox();
   await page.mouse.move(640, 400);
   await page.mouse.down({ button: 'middle' });
@@ -269,7 +271,7 @@ test('rotated/flipped local ROI uses inverse source coordinates and stale source
   await page.getByLabel('X 位置').press('Enter');
   await page.getByRole('tab', { name: 'AI', exact: true }).click();
   await expect(page.getByText('来源图片已修改或删除，请重新进入框选。')).toBeVisible();
-  await expect(page.getByRole('button', { name: '创建 1 个图层', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /生成并创建 1 个图层/ })).toHaveCount(0);
 });
 test('cancel ignores delayed poll; failure retry is explicit', async ({ page }) => {
   await fixture(page);

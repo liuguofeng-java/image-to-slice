@@ -21,11 +21,51 @@ export function registerResponseContracts(app: FastifyInstance) {
   const jobResponse = schema(
     z.object({
       id: idSchema,
-      status: z.enum(['running', 'ready', 'failed', 'cancelled', 'applied']),
+      status: z.enum(['running', 'ready', 'generating', 'failed', 'cancelled', 'applied']),
       message: z.string(),
       region: rectSchema,
       candidates: z.array(candidateSchema),
+      generation: z
+        .object({
+          completed: z.number().int(),
+          total: z.number().int(),
+          failed: z.number().int(),
+          targets: z.array(
+            z.object({
+              id: idSchema,
+              name: z.string(),
+              status: z.enum(['pending', 'running', 'ready', 'failed']),
+              message: z.string(),
+            }),
+          ),
+        })
+        .optional(),
+      resultRevision: z.number().int().optional(),
     }),
+  );
+  const layerRegenerationJobResponse = schema(
+    z.object({
+      id: idSchema,
+      status: z.enum(['generating', 'failed', 'cancelled', 'applied']),
+      message: z.string(),
+      generation: z.object({
+        completed: z.number().int(),
+        total: z.literal(1),
+        failed: z.number().int(),
+        targets: z.array(
+          z.object({
+            id: idSchema,
+            name: z.string(),
+            status: z.enum(['pending', 'running', 'ready', 'failed']),
+            message: z.string(),
+          }),
+        ),
+      }),
+      resultRevision: z.number().int().optional(),
+    }),
+  );
+  const acceptedJob = schema(
+    z.object({ id: idSchema, status: z.enum(['running', 'ready', 'generating', 'applied']) }),
   );
   const publicModel = schema(
     z.object({
@@ -33,6 +73,8 @@ export function registerResponseContracts(app: FastifyInstance) {
         .object({
           baseUrl: z.string(),
           model: z.string(),
+          imageModel: z.string().optional(),
+          imageQuality: z.enum(['auto', 'low', 'medium', 'high', 'xhigh', 'max']).default('max'),
           timeoutSeconds: z.number(),
           hasApiKey: z.boolean(),
         })
@@ -60,20 +102,39 @@ export function registerResponseContracts(app: FastifyInstance) {
     else if (route.url === '/api/v1/assets' || route.url === '/api/v1/assets/:id')
       response = schema(assetSchema);
     else if (route.url === '/api/v1/model-configs') response = publicModel;
+    else if (route.url === '/api/v1/layer-local-regeneration') response = projectResponse;
     else if (route.url.endsWith('/models'))
       response = schema(z.object({ models: z.array(z.string()) }));
-    else if (route.url.endsWith('/test') || method === 'DELETE')
+    else if (
+      route.url.endsWith('/test') ||
+      route.url.endsWith('/test-image') ||
+      method === 'DELETE'
+    )
       response = schema(z.object({ status: z.string() }));
     else if (route.url.endsWith('/apply')) response = projectResponse;
-    else if (route.url === '/api/v1/split-jobs')
-      response = schema(z.object({ id: idSchema, status: z.string() }));
+    else if (route.url.startsWith('/api/v1/layer-regeneration-jobs'))
+      response =
+        method === 'GET'
+          ? layerRegenerationJobResponse
+          : schema(
+              z.object({
+                id: idSchema,
+                status: z.enum(['generating', 'failed', 'cancelled', 'applied']),
+              }),
+            );
+    else if (route.url === '/api/v1/split-jobs' || route.url.endsWith('/generate'))
+      response = acceptedJob;
     else if (route.url.startsWith('/api/v1/split-jobs')) response = jobResponse;
     if (response)
       route.schema = {
         ...route.schema,
         tags: [route.url.split('/')[3]],
         response: {
-          [route.url === '/api/v1/split-jobs' ? 202 : 200]: response,
+          [route.url === '/api/v1/split-jobs' ||
+          route.url.endsWith('/generate') ||
+          (route.url.startsWith('/api/v1/layer-regeneration-jobs') && method === 'POST')
+            ? 202
+            : 200]: response,
           400: { type: 'object', properties: { error: { type: 'string' } } },
           409: { type: 'object', properties: { error: { type: 'string' } } },
         },

@@ -5,7 +5,7 @@ import swagger from '@fastify/swagger';
 import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 import { Storage } from './storage.js';
-import { providerRequest, type Analyzer } from './provider.js';
+import { editImage, providerRequest, type Analyzer, type ImageEditor } from './provider.js';
 import { documentSchema, fail, idSchema, modelSchema } from './domain.js';
 import { schema, registerResponseContracts } from './contracts.js';
 import { registerSplitRoutes } from './split-routes.js';
@@ -14,6 +14,7 @@ export async function createApp(options: {
   dataDir: string;
   origins?: string[];
   analyzer?: Analyzer;
+  imageEditor?: ImageEditor;
   fetcher?: typeof fetch;
 }) {
   const app = Fastify({ logger: false, bodyLimit: 8 * 1024 * 1024 });
@@ -82,7 +83,7 @@ export async function createApp(options: {
   function publicConfig(c: any) {
     if (!c) return null;
     const { apiKey, ...rest } = c;
-    return { ...rest, hasApiKey: !!apiKey };
+    return { ...rest, imageQuality: c.imageQuality || 'max', hasApiKey: !!apiKey };
   }
   app.get('/api/v1/model-configs', async () => ({ config: publicConfig(await storage.model()) }));
   app.put('/api/v1/model-configs', { schema: { body: schema(modelSchema) } }, async (req) => ({
@@ -154,6 +155,41 @@ export async function createApp(options: {
         options.fetcher,
       );
       if (!result.choices?.[0]?.message?.content) fail('模型未返回内容', 502);
+      return { status: 'success' };
+    }),
+  );
+  app.post('/api/v1/model-configs/test-image', async (req, reply) =>
+    withDisconnect(req, reply, async (signal) => {
+      const c = await configured();
+      if (!c.imageModel?.trim()) fail('请先设置图片生成模型');
+      const sharp = (await import('sharp')).default;
+      const png = await sharp({
+        create: { width: 64, height: 64, channels: 4, background: '#f0f0f0' },
+      })
+        .png()
+        .toBuffer();
+      const mask = await sharp({
+        create: {
+          width: 64,
+          height: 64,
+          channels: 4,
+          background: { r: 255, g: 255, b: 255, alpha: 0 },
+        },
+      })
+        .png()
+        .toBuffer();
+      await (options.imageEditor || editImage)(
+        c,
+        {
+          image: png,
+          mask,
+          prompt: 'Create a plain light gray square with no text, icons, or objects.',
+          size: '1024x1024',
+          background: 'opaque',
+        },
+        signal,
+        options.fetcher,
+      );
       return { status: 'success' };
     }),
   );

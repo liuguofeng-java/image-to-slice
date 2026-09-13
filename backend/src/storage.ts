@@ -177,6 +177,7 @@ export class Storage {
       const prev = await this.model();
       const model = {
         ...config,
+        imageQuality: config.imageQuality || prev?.imageQuality || 'max',
         apiKey: config.apiKey === undefined ? prev?.apiKey || '' : config.apiKey,
       };
       await this.atomic(join(this.root, 'private', 'model.json'), model);

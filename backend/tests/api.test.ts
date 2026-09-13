@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
@@ -26,9 +26,9 @@ const row: Candidate = {
   width: 7,
   height: 8,
 };
-async function fixture(t: any, analyzer?: any) {
+async function fixture(t: any, analyzer?: any, imageEditor?: any) {
   const dir = await mkdtemp(join(tmpdir(), 'slice-studio-test-'));
-  const ctx = await createApp({ dataDir: dir, analyzer });
+  const ctx = await createApp({ dataDir: dir, analyzer, imageEditor });
   await ctx.app.ready();
   t.after(async () => {
     await ctx.app.close();
@@ -62,6 +62,40 @@ async function fixture(t: any, analyzer?: any) {
   const saved = await ctx.storage.save(project.id, 0, project);
   return { ...ctx, dir, asset, layer, project: saved };
 }
+async function waitForJob(app: any, id: string) {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const job = (await app.inject('/api/v1/split-jobs/' + id)).json();
+    if (job.status !== 'generating') return job;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error('generation did not finish');
+}
+async function waitForLayerJob(app: any, id: string) {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const job = (await app.inject('/api/v1/layer-regeneration-jobs/' + id)).json();
+    if (job.status !== 'generating') return job;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error('layer regeneration did not finish');
+}
+test('legacy model configuration exposes max image quality by default', async (t) => {
+  const { app, dir } = await fixture(t);
+  await writeFile(
+    join(dir, 'private', 'model.json'),
+    JSON.stringify({
+      baseUrl: 'http://localhost:8080',
+      model: 'legacy-vision',
+      imageModel: 'legacy-image',
+      timeoutSeconds: 120,
+      apiKey: 'private-secret',
+    }),
+  );
+  const response = await app.inject('/api/v1/model-configs');
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().config.imageQuality, 'max');
+  assert.equal(response.json().config.hasApiKey, true);
+  assert.equal(response.body.includes('private-secret'), false);
+});
 test('geometry: outward rounding and transform-preserving crops', () => {
   assert.deepEqual(normalizeRect({ x: -0.4, y: 2.2, width: 8, height: 4.2 }, 20, 20), {
     x: 0,
@@ -91,6 +125,116 @@ test('geometry: outward rounding and transform-preserving crops', () => {
     assert.ok(Math.abs(before.x - after.x) < 1e-8);
     assert.ok(Math.abs(before.y - after.y) < 1e-8);
   }
+});
+test('local layer regeneration recrops a resized split layer without calling AI', async (t) => {
+  const { app, storage, project, asset, layer } = await fixture(t),
+    candidate = {
+      id: 'gift',
+      name: '礼物',
+      category: 'image' as const,
+      enabled: true,
+      x: 5,
+      y: 6,
+      width: 10,
+      height: 8,
+    },
+    childAsset = await storage.crop(asset.id, candidate, '礼物.png'),
+    child = croppedLayer(layer, asset, candidate, childAsset);
+  child.x -= child.width * 0.25;
+  child.y -= child.height * 0.5;
+  child.x += 10;
+  child.y += 6;
+  child.width *= 1.5;
+  child.height *= 2;
+  project.scenes[0].layers.push(child);
+  const saved = await storage.save(project.id, project.revision, project),
+    response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/layer-local-regeneration',
+      payload: {
+        projectId: saved.id,
+        sceneId: saved.activeSceneId,
+        layerId: child.id,
+        revision: saved.revision,
+        operationId: 'local-regenerate-once',
+      },
+    });
+  assert.equal(response.statusCode, 200, response.body);
+  const result = response.json(),
+    resultLayer = result.scenes[0].layers.find((item: ImageLayer) => item.id === child.id),
+    resultAsset = await storage.asset(resultLayer.assetId);
+  assert.notEqual(resultLayer.assetId, childAsset.id);
+  assert.ok(resultAsset.width > 0 && resultAsset.height > 0);
+  assert.deepEqual(
+    { width: resultLayer.source.rect.width, height: resultLayer.source.rect.height },
+    { width: resultAsset.width, height: resultAsset.height },
+  );
+  assert.notDeepEqual(resultLayer.source.rect, child.source?.rect);
+  assert.equal(resultLayer.x, child.x);
+  assert.equal(resultLayer.width, child.width);
+  assert.equal(result.revision, saved.revision + 1);
+});
+test('local layer regeneration uses the visible full-source layer when the original moved', async (t) => {
+  const { app, storage, project, asset } = await fixture(t),
+    source = project.scenes[0].layers[0] as ImageLayer;
+  Object.assign(source, {
+    x: 0,
+    y: 0,
+    width: asset.width,
+    height: asset.height,
+    rotation: 0,
+    flipX: false,
+    flipY: false,
+  });
+  const fullCandidate = {
+      id: 'full',
+      name: '完整画面',
+      category: 'background' as const,
+      enabled: true,
+      x: 0,
+      y: 0,
+      width: asset.width,
+      height: asset.height,
+    },
+    iconCandidate = {
+      id: 'icon',
+      name: '图标',
+      category: 'icon' as const,
+      enabled: true,
+      x: 2,
+      y: 3,
+      width: 7,
+      height: 8,
+    },
+    fullAsset = await storage.crop(asset.id, fullCandidate, '完整画面.png'),
+    iconAsset = await storage.crop(asset.id, iconCandidate, '图标.png'),
+    fullLayer = croppedLayer(source, asset, fullCandidate, fullAsset),
+    iconLayer = croppedLayer(source, asset, iconCandidate, iconAsset);
+  Object.assign(iconLayer, { x: 20, y: 10, width: 8, height: 9 });
+  Object.assign(source, { x: 500, y: -500 });
+  project.scenes[0].layers.push(fullLayer, iconLayer);
+  const saved = await storage.save(project.id, project.revision, project),
+    response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/layer-local-regeneration',
+      payload: {
+        projectId: saved.id,
+        sceneId: saved.activeSceneId,
+        layerId: iconLayer.id,
+        revision: saved.revision,
+        operationId: 'local-regenerate-visible-source',
+      },
+    });
+  assert.equal(response.statusCode, 200, response.body);
+  const resultLayer = response
+      .json()
+      .scenes[0].layers.find((item: ImageLayer) => item.id === iconLayer.id),
+    resultAsset = await storage.asset(resultLayer.assetId);
+  assert.deepEqual(resultLayer.source.rect, { x: 20, y: 10, width: 8, height: 9 });
+  assert.deepEqual(
+    { width: resultAsset.width, height: resultAsset.height },
+    { width: 8, height: 9 },
+  );
 });
 test('project save checks revision, rejects invalid assets, and rolls back failed writes', async (t) => {
   const { app, storage, project } = await fixture(t);
@@ -251,6 +395,401 @@ test('mixed AI candidates atomically create image and editable text layers', asy
   assert.equal(layers[2].content, '开始游戏');
   assert.equal(layers[2].assetId, undefined);
 });
+test('tree-aware generation calls parent and image targets, then commits all layers once', async (t) => {
+  let calls = 0;
+  const editor = async (_config: any, input: any) => {
+    calls++;
+    const [width, height] = input.size.split('x').map(Number);
+    return sharp({ create: { width, height, channels: 4, background: '#2367d1' } })
+      .png()
+      .toBuffer();
+  };
+  const { app, storage, project, layer } = await fixture(t, undefined, editor);
+  await storage.saveModel({
+    baseUrl: 'http://localhost:8080',
+    model: 'vision',
+    imageModel: 'gptimage2.5-configured',
+    apiKey: 'secret',
+    timeoutSeconds: 120,
+  });
+  const started = await app.inject({
+    method: 'POST',
+    url: '/api/v1/split-jobs',
+    payload: {
+      projectId: project.id,
+      sceneId: project.activeSceneId,
+      layerId: layer.id,
+      region: { x: 0, y: 0, width: 40, height: 30 },
+      manual: true,
+    },
+  });
+  const text: Candidate = {
+    id: 'text-generate',
+    name: '程序字体',
+    category: 'text',
+    enabled: true,
+    x: 16,
+    y: 10,
+    width: 10,
+    height: 5,
+    text: {
+      content: '开始',
+      fontFamily: 'sans-serif',
+      fontSize: 5,
+      fontWeight: 700,
+      fontStyle: 'normal',
+      fill: '#ffffff',
+      align: 'center',
+      verticalAlign: 'middle',
+      lineHeight: 1.2,
+      letterSpacing: 0,
+      resizeMode: 'fixed',
+    },
+  };
+  const body = {
+    revision: project.revision,
+    operationId: 'generate-once',
+    candidates: [row, text],
+  };
+  const accepted = await app.inject({
+    method: 'POST',
+    url: `/api/v1/split-jobs/${started.json().id}/generate`,
+    payload: body,
+  });
+  assert.equal(accepted.statusCode, 202, accepted.body);
+  const job = await waitForJob(app, started.json().id);
+  assert.equal(job.status, 'applied', JSON.stringify(job));
+  assert.equal(job.generation.total, 2);
+  assert.equal(calls, 2);
+  const saved = await storage.project(project.id),
+    layers = saved.scenes[0].layers;
+  assert.equal(saved.revision, project.revision + 1);
+  assert.equal(layers.length, 3);
+  assert.equal((layers[0] as ImageLayer).assetId === layer.assetId, false);
+  assert.deepEqual({ ...layers[0], assetId: layer.assetId }, layer);
+  assert.equal(layers[1].type, 'image');
+  assert.equal(layers[2].type, 'text');
+  assert.equal((layers[2] as TextLayer).content, '开始');
+  const duplicate = await app.inject({
+    method: 'POST',
+    url: `/api/v1/split-jobs/${started.json().id}/generate`,
+    payload: body,
+  });
+  assert.equal(duplicate.statusCode, 202, duplicate.body);
+  assert.equal(calls, 2);
+  assert.equal((await storage.project(project.id)).revision, saved.revision);
+});
+
+test('partial generation failure leaves project unchanged and retry bills only failed targets', async (t) => {
+  let calls = 0;
+  const editor = async (_config: any, input: any) => {
+    calls++;
+    if (calls === 2) throw new Error('temporary image failure');
+    const [width, height] = input.size.split('x').map(Number);
+    return sharp({ create: { width, height, channels: 4, background: '#55aa22' } })
+      .png()
+      .toBuffer();
+  };
+  const { app, storage, project, layer } = await fixture(t, undefined, editor);
+  await storage.saveModel({
+    baseUrl: 'http://localhost:8080',
+    model: 'vision',
+    imageModel: 'image-model',
+    timeoutSeconds: 120,
+  });
+  const started = await app.inject({
+    method: 'POST',
+    url: '/api/v1/split-jobs',
+    payload: {
+      projectId: project.id,
+      sceneId: project.activeSceneId,
+      layerId: layer.id,
+      region: { x: 0, y: 0, width: 40, height: 30 },
+      manual: true,
+    },
+  });
+  const body = { revision: project.revision, operationId: 'retry-failed', candidates: [row] };
+  await app.inject({
+    method: 'POST',
+    url: `/api/v1/split-jobs/${started.json().id}/generate`,
+    payload: body,
+  });
+  const failed = await waitForJob(app, started.json().id);
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.generation.completed, 1);
+  assert.equal(failed.generation.failed, 1);
+  const unchanged = await storage.project(project.id);
+  assert.equal(unchanged.revision, project.revision);
+  assert.deepEqual(unchanged.scenes, project.scenes);
+  await app.inject({
+    method: 'POST',
+    url: `/api/v1/split-jobs/${started.json().id}/generate`,
+    payload: body,
+  });
+  const applied = await waitForJob(app, started.json().id);
+  assert.equal(applied.status, 'applied', JSON.stringify(applied));
+  assert.equal(calls, 3);
+  assert.equal((await storage.project(project.id)).revision, project.revision + 1);
+});
+
+test('image generation provider concurrency never exceeds two requests', async (t) => {
+  let active = 0,
+    maximum = 0,
+    calls = 0;
+  const editor = async (_config: any, input: any) => {
+    calls++;
+    active++;
+    maximum = Math.max(maximum, active);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    active--;
+    const [width, height] = input.size.split('x').map(Number);
+    return sharp({ create: { width, height, channels: 4, background: '#334455' } })
+      .png()
+      .toBuffer();
+  };
+  const { app, storage, project, layer } = await fixture(t, undefined, editor);
+  await storage.saveModel({
+    baseUrl: 'http://localhost:8080',
+    model: 'vision',
+    imageModel: 'image-model',
+    timeoutSeconds: 120,
+  });
+  const started = await app.inject({
+    method: 'POST',
+    url: '/api/v1/split-jobs',
+    payload: {
+      projectId: project.id,
+      sceneId: project.activeSceneId,
+      layerId: layer.id,
+      region: { x: 0, y: 0, width: 40, height: 30 },
+      manual: true,
+    },
+  });
+  const candidates = Array.from(
+    { length: 4 },
+    (_, index): Candidate => ({
+      id: `parallel-${index}`,
+      name: `图片 ${index}`,
+      category: 'image',
+      enabled: true,
+      x: index * 9,
+      y: 2,
+      width: 6,
+      height: 6,
+    }),
+  );
+  await app.inject({
+    method: 'POST',
+    url: `/api/v1/split-jobs/${started.json().id}/generate`,
+    payload: { revision: project.revision, operationId: 'parallel-two', candidates },
+  });
+  const job = await waitForJob(app, started.json().id);
+  assert.equal(job.status, 'applied', JSON.stringify(job));
+  assert.equal(calls, 5);
+  assert.equal(maximum, 2);
+});
+
+test('unselected AI targets use local processing without model configuration or remote calls', async (t) => {
+  let calls = 0;
+  const { app, storage, project, layer, asset } = await fixture(t, undefined, async () => {
+    calls++;
+    throw new Error('remote editor must not be called');
+  });
+  const started = await app.inject({
+    method: 'POST',
+    url: '/api/v1/split-jobs',
+    payload: {
+      projectId: project.id,
+      sceneId: project.activeSceneId,
+      layerId: layer.id,
+      region: { x: 0, y: 0, width: 40, height: 30 },
+      manual: true,
+    },
+  });
+  const localRow = { ...row, id: 'local-only', generate: false };
+  const accepted = await app.inject({
+    method: 'POST',
+    url: `/api/v1/split-jobs/${started.json().id}/generate`,
+    payload: {
+      revision: project.revision,
+      operationId: 'local-processing',
+      generateSource: false,
+      candidates: [localRow],
+    },
+  });
+  assert.equal(accepted.statusCode, 202, accepted.body);
+  const job = await waitForJob(app, started.json().id);
+  assert.equal(job.status, 'applied', JSON.stringify(job));
+  assert.equal(job.generation.total, 0);
+  assert.equal(calls, 0);
+  const saved = await storage.project(project.id),
+    layers = saved.scenes[0].layers;
+  assert.deepEqual(layers[0], layer);
+  const expected = await sharp(storage.imagePath(asset.id))
+      .extract({ left: row.x, top: row.y, width: row.width, height: row.height })
+      .raw()
+      .toBuffer(),
+    actual = await sharp(storage.imagePath((layers[1] as ImageLayer).assetId))
+      .raw()
+      .toBuffer();
+  assert.deepEqual(actual, expected);
+});
+
+test('single image regeneration replaces only the selected asset and is idempotent', async (t) => {
+  let calls = 0;
+  const editor = async (_config: any, input: any) => {
+    calls++;
+    const [width, height] = input.size.split('x').map(Number);
+    return sharp({ create: { width, height, channels: 4, background: '#336699' } })
+      .png()
+      .toBuffer();
+  };
+  const { app, storage, project, layer } = await fixture(t, undefined, editor);
+  await storage.saveModel({
+    baseUrl: 'http://localhost:8080',
+    model: 'vision',
+    imageModel: 'image-model',
+    timeoutSeconds: 120,
+  });
+  const center = point(layer, 20, 15, { id: layer.assetId, name: '', width: 40, height: 30 }),
+    child: TextLayer = {
+      id: 'preserved-child',
+      type: 'text',
+      name: '保留文字',
+      x: center.x - 5,
+      y: center.y - 3,
+      width: 10,
+      height: 6,
+      rotation: layer.rotation,
+      flipX: false,
+      flipY: false,
+      opacity: 1,
+      hidden: false,
+      locked: false,
+      content: '保留',
+      fontFamily: 'sans-serif',
+      fontSize: 6,
+      fontWeight: 400,
+      fontStyle: 'normal',
+      fill: '#ffffff',
+      align: 'center',
+      verticalAlign: 'middle',
+      lineHeight: 1.2,
+      letterSpacing: 0,
+      resizeMode: 'fixed',
+    };
+  project.scenes[0].layers.push(child);
+  const withChild = await storage.save(project.id, project.revision, project),
+    body = {
+      projectId: project.id,
+      sceneId: project.activeSceneId,
+      layerId: layer.id,
+      revision: withChild.revision,
+      operationId: 'regenerate-single',
+    },
+    started = await app.inject({
+      method: 'POST',
+      url: '/api/v1/layer-regeneration-jobs',
+      payload: body,
+    });
+  assert.equal(started.statusCode, 202, started.body);
+  const job = await waitForLayerJob(app, started.json().id);
+  assert.equal(job.status, 'applied', JSON.stringify(job));
+  assert.equal(job.generation.total, 1);
+  assert.equal(calls, 1);
+  const saved = await storage.project(project.id),
+    source = saved.scenes[0].layers[0] as ImageLayer;
+  assert.notEqual(source.assetId, layer.assetId);
+  assert.deepEqual({ ...source, assetId: layer.assetId }, layer);
+  assert.deepEqual(saved.scenes[0].layers[1], child);
+  const textAttempt = await app.inject({
+    method: 'POST',
+    url: '/api/v1/layer-regeneration-jobs',
+    payload: {
+      ...body,
+      layerId: child.id,
+      revision: saved.revision,
+      operationId: 'regenerate-text-not-allowed',
+    },
+  });
+  assert.equal(textAttempt.statusCode, 400, textAttempt.body);
+  assert.match(textAttempt.body, /只有图片图层/);
+  const duplicate = await app.inject({
+    method: 'POST',
+    url: '/api/v1/layer-regeneration-jobs',
+    payload: body,
+  });
+  assert.equal(duplicate.statusCode, 202, duplicate.body);
+  assert.equal(duplicate.json().id, started.json().id);
+  assert.equal(calls, 1);
+  assert.equal((await storage.project(project.id)).revision, saved.revision);
+});
+
+test('single image regeneration failure and cancellation leave the project unchanged', async (t) => {
+  let calls = 0,
+    release!: () => void,
+    delayed = false;
+  const editor = async (_config: any, input: any) => {
+    calls++;
+    if (calls === 1) throw new Error('temporary generation failure');
+    if (delayed) await new Promise<void>((resolve) => (release = resolve));
+    const [width, height] = input.size.split('x').map(Number);
+    return sharp({ create: { width, height, channels: 4, background: '#884422' } })
+      .png()
+      .toBuffer();
+  };
+  const { app, storage, project, layer } = await fixture(t, undefined, editor);
+  await storage.saveModel({
+    baseUrl: 'http://localhost:8080',
+    model: 'vision',
+    imageModel: 'image-model',
+    timeoutSeconds: 120,
+  });
+  const body = {
+      projectId: project.id,
+      sceneId: project.activeSceneId,
+      layerId: layer.id,
+      revision: project.revision,
+      operationId: 'regenerate-retry',
+    },
+    started = await app.inject({
+      method: 'POST',
+      url: '/api/v1/layer-regeneration-jobs',
+      payload: body,
+    }),
+    failed = await waitForLayerJob(app, started.json().id);
+  assert.equal(failed.status, 'failed');
+  assert.deepEqual((await storage.project(project.id)).scenes, project.scenes);
+  const retried = await app.inject({
+    method: 'POST',
+    url: `/api/v1/layer-regeneration-jobs/${started.json().id}/retry`,
+  });
+  assert.equal(retried.statusCode, 202, retried.body);
+  assert.equal((await waitForLayerJob(app, started.json().id)).status, 'applied');
+  assert.equal(calls, 2);
+
+  const afterRetry = await storage.project(project.id);
+  delayed = true;
+  const cancelledStart = await app.inject({
+      method: 'POST',
+      url: '/api/v1/layer-regeneration-jobs',
+      payload: {
+        ...body,
+        revision: afterRetry.revision,
+        operationId: 'regenerate-cancel',
+      },
+    }),
+    cancelledId = cancelledStart.json().id;
+  while (!release) await new Promise((resolve) => setTimeout(resolve, 1));
+  await app.inject({ method: 'DELETE', url: `/api/v1/layer-regeneration-jobs/${cancelledId}` });
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(
+    (await app.inject(`/api/v1/layer-regeneration-jobs/${cancelledId}`)).json().status,
+    'cancelled',
+  );
+  assert.deepEqual(await storage.project(project.id), afterRetry);
+});
 test('cancel ignores late model response, source edits block application', async (t) => {
   let resolve!: (v: Candidate[]) => void;
   const { app, storage, project } = await fixture(
@@ -390,6 +929,9 @@ test('OpenAPI request contract and origin/host protections', async (t) => {
     '/api/v1/projects',
     '/api/v1/assets',
     '/api/v1/split-jobs',
+    '/api/v1/layer-regeneration-jobs',
+    '/api/v1/layer-regeneration-jobs/{id}',
+    '/api/v1/layer-regeneration-jobs/{id}/retry',
     '/api/v1/exports',
   ])
     assert.ok(spec.paths[path]);

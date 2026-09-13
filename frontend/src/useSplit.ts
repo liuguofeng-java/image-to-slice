@@ -6,6 +6,11 @@ import { normalizeRect } from './geometry';
 import { defaultTextStyle } from './text';
 import type { Candidate, Rect, Job, Document } from './types';
 
+const defaultRenderIntent = (category: Candidate['category']) => ({
+  alphaMode: category === 'background' ? ('opaque' as const) : ('cutout' as const),
+  visualDescription: '',
+});
+
 /** 管理一次框选会话；候选是临时草稿，仅 apply 成功才改变项目。 */
 export function useSplit() {
   const store = useEditor(),
@@ -17,25 +22,36 @@ export function useSplit() {
     busy = ref(false),
     applying = ref(false),
     model = ref('未配置'),
-    sourceId = ref('');
+    imageModel = ref('未配置'),
+    sourceId = ref(''),
+    generateSource = ref(true),
+    selectedCandidateId = ref('');
   // serial 是本地会话令牌。取消 HTTP 不保证远端立即停止，所以每次 await 后也检查它。
   let serial = 0,
     timer: ReturnType<typeof setTimeout> | undefined,
     signature = '',
     operationId = '',
-    applyBefore: Document | null = null;
+    applyBefore: Document | null = null,
+    releaseTimer: (() => void) | undefined;
   const source = computed(() => {
       const layer = store.layers.find((l) => l.id === sourceId.value);
       return layer?.type === 'image' ? layer : undefined;
     }),
     asset = computed(() => (source.value ? store.assets[source.value.assetId] : undefined));
   const valid = computed(() => !!source.value && !source.value.hidden && !source.value.locked),
-    ready = computed(() => job.value?.status === 'ready');
+    ready = computed(() => job.value?.status === 'ready'),
+    generationLocked = computed(() => !!job.value?.generation),
+    canGenerate = computed(
+      () =>
+        job.value?.status === 'ready' || (job.value?.status === 'failed' && !!job.value.generation),
+    );
   /** 应用期间禁止中途退出；force 仅供成功提交后的内部清理使用。 */
   async function cancel(force = false) {
     if (applying.value && !force) return;
     serial++;
     clearTimeout(timer);
+    releaseTimer?.();
+    releaseTimer = undefined;
     const id = job.value?.id;
     job.value = null;
     busy.value = false;
@@ -48,6 +64,8 @@ export function useSplit() {
     region.value = null;
     candidates.value = [];
     sourceId.value = '';
+    selectedCandidateId.value = '';
+    generateSource.value = true;
     message.value = '';
   }
   async function enter() {
@@ -55,12 +73,16 @@ export function useSplit() {
     if (!l || l.hidden || l.locked || store.exclusive || applying.value) return;
     await close();
     sourceId.value = l.id;
+    generateSource.value = true;
     signature = JSON.stringify(l);
     active.value = true;
     const token = serial;
     try {
-      const value = (await api.config()).config?.model || '未配置';
-      if (token === serial) model.value = value;
+      const config = (await api.config()).config;
+      if (token === serial) {
+        model.value = config?.model || '未配置';
+        imageModel.value = config?.imageModel || '未配置';
+      }
     } catch (e) {
       if (token === serial) message.value = (e as Error).message;
     }
@@ -73,6 +95,7 @@ export function useSplit() {
     if (!asset.value || busy.value || applying.value) return;
     await cancel();
     candidates.value = [];
+    selectedCandidateId.value = '';
     try {
       region.value = normalizeRect(r, asset.value.width, asset.value.height);
       message.value = '';
@@ -131,7 +154,16 @@ export function useSplit() {
           if (result.status === 'running') timer = setTimeout(() => void poll(), 700);
           else {
             busy.value = false;
-            candidates.value = clone(result.candidates);
+            candidates.value = clone(result.candidates).map((candidate) => ({
+              ...candidate,
+              generate: candidate.generate !== false,
+              ...(candidate.category === 'text'
+                ? {}
+                : {
+                    renderIntent: candidate.renderIntent || defaultRenderIntent(candidate.category),
+                  }),
+            }));
+            selectedCandidateId.value = candidates.value[0]?.id || '';
             if (manual) add();
           }
         } catch (e) {
@@ -150,28 +182,35 @@ export function useSplit() {
     }
   }
   function add() {
-    if (!region.value || candidates.value.length >= 200 || !ready.value || applying.value) return;
+    if (!region.value || !ready.value || applying.value || generationLocked.value) return;
     const r = region.value;
     candidates.value.push({
       id: crypto.randomUUID(),
       name: `切图 ${candidates.value.length + 1}`,
       category: 'image',
       enabled: true,
+      generate: true,
+      renderIntent: defaultRenderIntent('image'),
       x: r.x,
       y: r.y,
       width: Math.max(1, Math.floor(r.width / 2)),
       height: Math.max(1, Math.floor(r.height / 2)),
     });
+    selectedCandidateId.value = candidates.value.at(-1)!.id;
   }
   function edit(id: string, patch: Partial<Candidate>) {
-    if (applying.value || !region.value) return;
+    if (applying.value || generationLocked.value || !region.value) return;
     const c = candidates.value.find((c) => c.id === id);
     if (!c) return;
     const r = region.value,
       next = { ...c, ...patch };
     if (next.category === 'text' && !next.text)
       next.text = defaultTextStyle(next.name === '切图' ? '' : next.name);
-    if (next.category !== 'text') delete next.text;
+    if (next.category === 'text') delete next.renderIntent;
+    else {
+      delete next.text;
+      next.renderIntent ||= defaultRenderIntent(next.category);
+    }
     next.x = Math.max(r.x, Math.min(r.x + r.width - 1, next.x));
     next.y = Math.max(r.y, Math.min(r.y + r.height - 1, next.y));
     next.width = Math.max(1, Math.min(next.width, r.x + r.width - next.x));
@@ -180,8 +219,47 @@ export function useSplit() {
     // 内容修改后使用新的幂等键；原样重试 apply 则保留同一键。
     operationId = crypto.randomUUID();
   }
+  function remove(id: string) {
+    if (applying.value || generationLocked.value) return;
+    candidates.value = candidates.value.filter((candidate) => candidate.id !== id);
+    if (selectedCandidateId.value === id) selectedCandidateId.value = '';
+    operationId = crypto.randomUUID();
+  }
+  function selectCandidate(id: string) {
+    if (candidates.value.some((candidate) => candidate.id === id)) selectedCandidateId.value = id;
+  }
+  async function regenerateCandidate(id: string) {
+    if (!ready.value || busy.value || applying.value || generationLocked.value) return;
+    const candidate = candidates.value.find((item) => item.id === id),
+      a = asset.value;
+    if (!candidate || !a) return;
+    try {
+      region.value = normalizeRect(candidate, a.width, a.height);
+    } catch (e) {
+      message.value = (e as Error).message;
+      return;
+    }
+    await start(false);
+  }
+  function setGenerateSource(value: boolean) {
+    if (applying.value || generationLocked.value || generateSource.value === value) return;
+    generateSource.value = value;
+    operationId = crypto.randomUUID();
+  }
+  function setAllGeneration(value: boolean) {
+    if (applying.value || generationLocked.value) return;
+    generateSource.value = value;
+    for (const candidate of candidates.value)
+      if (candidate.enabled && candidate.category !== 'text') candidate.generate = value;
+    operationId = crypto.randomUUID();
+  }
   async function apply() {
-    if (!ready.value || !valid.value || applying.value || !candidates.value.some((c) => c.enabled))
+    if (
+      !canGenerate.value ||
+      !valid.value ||
+      applying.value ||
+      !candidates.value.some((c) => c.enabled)
+    )
       return;
     if (
       candidates.value.some(
@@ -192,6 +270,38 @@ export function useSplit() {
       message.value = '文字候选必须填写文字内容。';
       return;
     }
+    const retry = !!job.value?.generation,
+      calls = retry
+        ? job.value!.generation!.failed
+        : (generateSource.value ? 1 : 0) +
+          candidates.value.filter(
+            (candidate) =>
+              candidate.enabled && candidate.category !== 'text' && candidate.generate !== false,
+          ).length;
+    try {
+      await ElMessageBox.confirm(
+        retry
+          ? calls
+            ? `将仅重试 ${calls} 个失败图片目标。每个目标会调用一次远程图片生成模型「${imageModel.value}」，可能产生费用且不会自动重试。`
+            : '所有图片均已生成，本次只重试项目提交，不会再次调用远程图片模型。'
+          : calls
+            ? `将调用远程图片生成模型「${imageModel.value}」共 ${calls} 次。未勾选 AI 的图片会直接本地裁切，程序字体会创建为可编辑图层。可能产生费用且不会自动重试。`
+            : '本次不会调用远程图片生成模型；所有图片会直接从原图本地裁切，程序字体会创建为可编辑图层。',
+        retry ? '确认重试图片生成' : '确认 AI 重生成',
+        {
+          confirmButtonText: retry
+            ? calls
+              ? '重试失败项'
+              : '重试提交'
+            : calls
+              ? `开始 ${calls} 次生成`
+              : '直接创建图层',
+          cancelButtonText: '取消',
+        },
+      );
+    } catch {
+      return;
+    }
     applying.value = true;
     store.exclusive = true;
     const token = serial;
@@ -199,12 +309,29 @@ export function useSplit() {
       await store.flush();
       // 首次提交前保留快照，网络失败重试也不能覆盖它，否则撤销会丢失生成前状态。
       applyBefore ||= store.doc();
-      const p = await api.apply(
+      await api.generate(
         job.value!.id,
         store.project!.revision,
         operationId,
         candidates.value,
+        generateSource.value,
       );
+      while (token === serial) {
+        const current = await api.job(job.value!.id);
+        if (token !== serial) return;
+        job.value = current;
+        message.value = current.message;
+        if (current.status !== 'generating') break;
+        await new Promise<void>((resolve) => {
+          releaseTimer = resolve;
+          timer = setTimeout(() => {
+            releaseTimer = undefined;
+            resolve();
+          }, 700);
+        });
+      }
+      if (token !== serial || job.value?.status !== 'applied') return;
+      const p = await api.open(store.project!.id);
       if (token !== serial) return;
       await store.accept(p, applyBefore);
       const previousScene = applyBefore.scenes.find((scene) => scene.id === p.activeSceneId)!;
@@ -218,6 +345,25 @@ export function useSplit() {
       message.value = (e as Error).message;
     } finally {
       applying.value = false;
+      store.exclusive = false;
+    }
+  }
+  async function cancelGeneration() {
+    if (!job.value || !['generating'].includes(job.value.status)) return;
+    serial++;
+    clearTimeout(timer);
+    releaseTimer?.();
+    releaseTimer = undefined;
+    try {
+      await api.cancel(job.value.id);
+      job.value.status = 'cancelled';
+      job.value.message = '已取消；项目未发生变化。';
+      message.value = job.value.message;
+    } catch (e) {
+      message.value = (e as Error).message;
+    } finally {
+      applying.value = false;
+      busy.value = false;
       store.exclusive = false;
     }
   }
@@ -248,10 +394,15 @@ export function useSplit() {
     busy,
     applying,
     model,
+    imageModel,
+    generateSource,
+    selectedCandidateId,
     source,
     asset,
     valid,
     ready,
+    generationLocked,
+    canGenerate,
     enter,
     close,
     whole,
@@ -260,7 +411,13 @@ export function useSplit() {
     cancel,
     add,
     edit,
+    remove,
+    selectCandidate,
+    regenerateCandidate,
+    setGenerateSource,
+    setAllGeneration,
     apply,
+    cancelGeneration,
   };
 }
 export type SplitController = ReturnType<typeof useSplit>;

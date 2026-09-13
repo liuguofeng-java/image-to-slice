@@ -25,8 +25,10 @@ const emit = defineEmits<{ export: [kind: 'png' | 'zip' | 'scene']; split: [] }>
 const vNumberScrub = numberScrub;
 const store = useEditor(),
   ratio = ref(true),
+  imagePreview = ref<{ showPreview: () => void }>(),
   fonts = availableSystemFonts();
-const textLayer = computed(() => (store.single?.type === 'text' ? store.single : undefined)),
+const imageLayer = computed(() => (store.single?.type === 'image' ? store.single : undefined)),
+  textLayer = computed(() => (store.single?.type === 'text' ? store.single : undefined)),
   contentDraft = ref(''),
   missingFont = computed(
     () =>
@@ -450,7 +452,21 @@ const alignments = [
       <section v-if="store.single.type === 'image'" class="property-section">
         <h2>图片</h2>
         <div class="asset-preview">
-          <img :src="imageUrl(store.single.assetId)" alt="所选图层原图" />
+          <el-image
+            ref="imagePreview"
+            class="image-preview-thumbnail"
+            :src="imageUrl(store.single.assetId)"
+            :alt="`所选图片：${store.single.name}`"
+            :preview-src-list="[imageUrl(store.single.assetId)]"
+            preview-teleported
+            hide-on-click-modal
+            fit="contain"
+            tabindex="0"
+            role="button"
+            :aria-label="`预览图片：${store.single.name}`"
+            @keydown.enter.prevent="imagePreview?.showPreview()"
+            @keydown.space.prevent="imagePreview?.showPreview()"
+          />
           <div>
             <strong>{{ store.single.name }}</strong>
             <small
@@ -459,6 +475,30 @@ const alignments = [
             >
           </div>
         </div>
+        <label class="stacked-field">
+          <span>透明材质</span>
+          <el-select
+            :model-value="imageLayer?.renderIntent?.alphaMode || 'opaque'"
+            aria-label="图片透明材质"
+            :disabled="store.single.locked || store.exclusive"
+            @change="
+              (value: any) =>
+                store.patch(store.single!.id, {
+                  renderIntent: {
+                    alphaMode: value,
+                    visualDescription: imageLayer?.renderIntent?.visualDescription || '',
+                  },
+                })
+            "
+          >
+            <el-option label="不透明背景" value="opaque" />
+            <el-option label="透明抠图" value="cutout" />
+            <el-option label="半透明材质" value="translucent" />
+          </el-select>
+        </label>
+        <p v-if="imageLayer?.renderIntent?.visualDescription" class="hint">
+          AI 材质判断：{{ imageLayer.renderIntent.visualDescription }}
+        </p>
         <el-button
           class="full-button"
           :disabled="store.single.hidden || store.single.locked || store.exclusive"

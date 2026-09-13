@@ -10,6 +10,11 @@ export interface Asset {
   height: number;
   name: string;
 }
+export type AlphaMode = 'opaque' | 'cutout' | 'translucent';
+export interface RenderIntent {
+  alphaMode: AlphaMode;
+  visualDescription: string;
+}
 export type TextResizeMode = 'auto-width' | 'auto-height' | 'fixed';
 export interface LayerBase extends Rect {
   id: string;
@@ -26,6 +31,7 @@ export interface ImageLayer extends LayerBase {
   type: 'image';
   assetId: string;
   radius: number;
+  renderIntent?: RenderIntent;
 }
 export interface TextStyle {
   content: string;
@@ -66,18 +72,51 @@ export interface Candidate extends Rect {
   name: string;
   category: 'image' | 'icon' | 'text' | 'background';
   enabled: boolean;
+  generate?: boolean;
   text?: TextStyle;
+  renderIntent?: RenderIntent;
 }
 export interface Job {
   id: string;
-  status: 'running' | 'ready' | 'failed' | 'cancelled' | 'applied';
+  status: 'running' | 'ready' | 'generating' | 'failed' | 'cancelled' | 'applied';
   message: string;
   region: Rect;
   candidates: Candidate[];
+  generation?: {
+    completed: number;
+    total: number;
+    failed: number;
+    targets: {
+      id: string;
+      name: string;
+      status: 'pending' | 'running' | 'ready' | 'failed';
+      message: string;
+    }[];
+  };
+  resultRevision?: number;
+}
+export interface LayerRegenerationJob {
+  id: string;
+  status: 'generating' | 'failed' | 'cancelled' | 'applied';
+  message: string;
+  generation: {
+    completed: number;
+    total: 1;
+    failed: number;
+    targets: {
+      id: string;
+      name: string;
+      status: 'pending' | 'running' | 'ready' | 'failed';
+      message: string;
+    }[];
+  };
+  resultRevision?: number;
 }
 export interface ModelConfig {
   baseUrl: string;
   model: string;
+  imageModel?: string;
+  imageQuality?: 'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   timeoutSeconds: number;
   hasApiKey?: boolean;
   apiKey?: string;

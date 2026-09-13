@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, shallowRef, watch, computed, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import Konva from 'konva';
+import { Loading, Refresh } from '@element-plus/icons-vue';
 import { useEditor } from '../store';
 import { imageUrl } from '../api';
-import { between, bounds, sourcePoint } from '../geometry';
+import { between, bounds, sourcePoint, worldPoint } from '../geometry';
 import { buildLayerTree, layerPaintOrder } from '../layerTree';
 import { defaultTextStyle, effectiveFontFamily, fitTextLayer, textConfig } from '../text';
 import type { Layer, Rect, Candidate, ImageLayer, TextLayer, Document } from '../types';
@@ -19,11 +20,17 @@ const props = defineProps<{
   source?: ImageLayer;
   region: Rect | null;
   candidates: Candidate[];
+  selectedCandidateId: string;
   busy: boolean;
+  localRegenerationBusy: boolean;
+  localRegenerationAvailable: boolean;
 }>();
 const emit = defineEmits<{
   region: [r: Rect];
   candidate: [id: string, patch: Partial<Candidate>];
+  selectCandidate: [id: string];
+  regenerateCandidate: [id: string];
+  regenerateLocalLayer: [];
   zoom: [value: number];
   error: [message: string];
 }>();
@@ -52,6 +59,16 @@ let observer: ResizeObserver,
 const stage = () => stageRef.value?.getNode() as Konva.Stage;
 const visible = computed(() => store.layers.filter((l) => !l.hidden));
 const painted = computed(() => layerPaintOrder(store.layers).filter((layer) => !layer.hidden));
+const selectionBounds = computed<Rect | null>(() => {
+  if (props.tool !== 'select' || editing.value) return null;
+  const boxes = store.selection.filter((layer) => !layer.hidden).map(bounds);
+  if (!boxes.length) return null;
+  const left = Math.min(...boxes.map((box) => box.x));
+  const top = Math.min(...boxes.map((box) => box.y));
+  const right = Math.max(...boxes.map((box) => box.x + box.width));
+  const bottom = Math.max(...boxes.map((box) => box.y + box.height));
+  return { x: left, y: top, width: right - left, height: bottom - top };
+});
 // 拖动期间冻结父子关系，避免节点跨越边界时树在指针移动中跳动；结束后再按最终位置重算。
 const layerTree = computed(() => dragTreeSnapshot || buildLayerTree(store.layers));
 const hitLayers = computed(() => {
@@ -71,6 +88,88 @@ const hitLayers = computed(() => {
     .map((entry) => entry.layer);
 });
 const sourceAsset = computed(() => (props.source ? store.assets[props.source.assetId] : undefined));
+const selectedCandidate = computed(() =>
+  props.candidates.find((candidate) => candidate.id === props.selectedCandidateId),
+);
+const candidateRegenerateStyle = computed(() => {
+  const l = props.source,
+    a = sourceAsset.value,
+    c = selectedCandidate.value;
+  if (props.tool !== 'split' || props.busy || !l || !a || !c) return {};
+  const p = worldPoint(l, a, c.x + c.width / 2, c.y);
+  return {
+    left: `${view.value.x + p.x * view.value.scale}px`,
+    top: `${view.value.y + p.y * view.value.scale}px`,
+  };
+});
+const selectedImageLayer = computed(() =>
+  store.single?.type === 'image' ? store.single : undefined,
+);
+type RegenerationBaseline = {
+  id: string;
+  sourceVersion: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+const regenerationBaseline = ref<RegenerationBaseline | null>(null);
+function regenerationState(layer: ImageLayer): RegenerationBaseline {
+  const rect = layer.source?.rect;
+  return {
+    id: layer.id,
+    sourceVersion: `${layer.assetId}:${layer.source?.layerId || ''}:${rect?.x ?? ''}:${rect?.y ?? ''}:${rect?.width ?? ''}:${rect?.height ?? ''}`,
+    x: layer.x,
+    y: layer.y,
+    width: layer.width,
+    height: layer.height,
+  };
+}
+watch(
+  () => (selectedImageLayer.value ? regenerationState(selectedImageLayer.value) : null),
+  (state) => {
+    const baseline = regenerationBaseline.value;
+    if (!state) regenerationBaseline.value = null;
+    else if (
+      !baseline ||
+      baseline.id !== state.id ||
+      baseline.sourceVersion !== state.sourceVersion
+    )
+      regenerationBaseline.value = state;
+  },
+  { immediate: true },
+);
+const layerGeometryChanged = computed(() => {
+  const layer = selectedImageLayer.value,
+    baseline = regenerationBaseline.value,
+    epsilon = 1e-4;
+  return (
+    !!layer &&
+    !!baseline &&
+    layer.id === baseline.id &&
+    (Math.abs(layer.x - baseline.x) > epsilon ||
+      Math.abs(layer.y - baseline.y) > epsilon ||
+      Math.abs(layer.width - baseline.width) > epsilon ||
+      Math.abs(layer.height - baseline.height) > epsilon)
+  );
+});
+const layerRegenerateStyle = computed(() => {
+  const l = selectedImageLayer.value;
+  if (props.tool !== 'select' || !l) return {};
+  const b = bounds(l),
+    gap = 10,
+    buttonWidth = 32,
+    left = view.value.x + b.x * view.value.scale,
+    right = view.value.x + (b.x + b.width) * view.value.scale,
+    top = view.value.y + b.y * view.value.scale,
+    placeRight = right + gap + buttonWidth <= size.value.width - 8,
+    placeAbove = top - gap - buttonWidth >= 20;
+  return {
+    left: `${placeRight ? right + gap : left - gap}px`,
+    top: `${placeAbove ? top - gap : top + gap}px`,
+    transform: `translate(${placeRight ? '0' : '-100%'}, ${placeAbove ? '-100%' : '0'})`,
+  };
+});
 // 候选框使用源像素坐标，共用图片的中心旋转/翻转变换，因此无需反复换算矩形。
 const overlay = computed(() => {
   const l = props.source,
@@ -179,6 +278,17 @@ function fit() {
     x: size.value.width / 2 - ((left + right) / 2) * z,
     y: size.value.height / 2 - ((top + bottom) / 2) * z,
     scale: Math.max(0.01, z),
+  };
+}
+function focusLayer(id: string) {
+  const layer = store.layers.find((item) => item.id === id);
+  if (!layer || layer.hidden) return;
+  const b = bounds(layer);
+  const scale = view.value.scale;
+  view.value = {
+    x: size.value.width / 2 - (b.x + b.width / 2) * scale,
+    y: size.value.height / 2 - (b.y + b.height / 2) * scale,
+    scale: view.value.scale,
   };
 }
 /** 缩放围绕鼠标或画布中心，保持该点对应的设计坐标不动。 */
@@ -314,13 +424,13 @@ async function editText(layer: TextLayer, created = false, before?: Document) {
   resizeTextEditor();
   syncTransformer();
 }
-function commitTextEdit() {
+function commitTextEdit(keepEmpty = false) {
   const current = editing.value;
   if (!current) return;
   const layer = store.layers.find((item) => item.id === current.id);
   editing.value = null;
   if (!layer || layer.type !== 'text') return;
-  if (current.created && !current.value.trim()) {
+  if (current.created && !current.value.trim() && !keepEmpty) {
     store.mutate(() => {
       store.scene!.layers = store.layers.filter((item) => item.id !== layer.id);
       store.selected = [];
@@ -345,7 +455,9 @@ function textEditorKey(event: KeyboardEvent) {
   }
 }
 function outsideTextEditor(event: PointerEvent) {
-  if (editing.value && event.target !== textEditor.value) commitTextEdit();
+  if (!editing.value || event.target === textEditor.value) return;
+  const target = event.target as HTMLElement | null;
+  commitTextEdit(!!target?.closest('.right-panel'));
 }
 function createText(rect: Rect, dragged: boolean) {
   const before = store.doc(),
@@ -435,7 +547,14 @@ function down(e: any) {
     return;
   }
   if (props.tool === 'split') {
-    if (props.busy || !props.source || !sourceAsset.value || e.target.name() === 'candidate')
+    if (
+      props.busy ||
+      !props.source ||
+      !sourceAsset.value ||
+      e.target.name() === 'candidate' ||
+      e.target.getClassName?.() === 'Transformer' ||
+      e.target.getParent?.()?.getClassName?.() === 'Transformer'
+    )
       return;
     start = sourcePoint(props.source, sourceAsset.value, pointer().x, pointer().y);
     drawing.value = null;
@@ -647,6 +766,55 @@ function candidateEnd(e: any, c: Candidate) {
   emit('candidate', c.id, { x: e.target.x(), y: e.target.y() });
   void nextTick(() => e.target.position({ x: c.x, y: c.y }));
 }
+function selectCandidate(c?: Candidate) {
+  if (!c) return;
+  if (!props.busy) emit('selectCandidate', c.id);
+}
+function regenerateCandidate() {
+  if (selectedCandidate.value && !props.busy)
+    emit('regenerateCandidate', selectedCandidate.value.id);
+}
+function regenerateLocalLayer() {
+  if (selectedImageLayer.value && props.localRegenerationAvailable && !props.localRegenerationBusy)
+    emit('regenerateLocalLayer');
+}
+const candidateHandleKeys = [
+  'top-left',
+  'top-center',
+  'top-right',
+  'middle-left',
+  'middle-right',
+  'bottom-left',
+  'bottom-center',
+  'bottom-right',
+] as const;
+type CandidateHandle = (typeof candidateHandleKeys)[number];
+function candidateHandlePosition(c: Candidate | undefined, key: CandidateHandle) {
+  if (!c) return { x: 0, y: 0 };
+  return {
+    x: key.includes('left') ? c.x : key.includes('right') ? c.x + c.width : c.x + c.width / 2,
+    y: key.includes('top') ? c.y : key.includes('bottom') ? c.y + c.height : c.y + c.height / 2,
+  };
+}
+function candidateHandlePatch(c: Candidate, key: CandidateHandle, x: number, y: number) {
+  const right = c.x + c.width,
+    bottom = c.y + c.height,
+    left = key.includes('left') ? Math.min(x, right - 1) : c.x,
+    top = key.includes('top') ? Math.min(y, bottom - 1) : c.y,
+    nextRight = key.includes('right') ? Math.max(x, left + 1) : right,
+    nextBottom = key.includes('bottom') ? Math.max(y, top + 1) : bottom;
+  return { x: left, y: top, width: nextRight - left, height: nextBottom - top };
+}
+function candidateHandleMove(e: any, c: Candidate | undefined, key: CandidateHandle) {
+  if (!c) return;
+  stage()
+    .findOne('#candidate-' + c.id)
+    ?.setAttrs(candidateHandlePatch(c, key, e.target.x(), e.target.y()));
+}
+function candidateHandleEnd(e: any, c: Candidate | undefined, key: CandidateHandle) {
+  if (!c) return;
+  emit('candidate', c.id, candidateHandlePatch(c, key, e.target.x(), e.target.y()));
+}
 onMounted(() => {
   observer = new ResizeObserver((entries) => {
     const r = entries[0].contentRect;
@@ -667,12 +835,16 @@ onBeforeUnmount(() => {
   window.removeEventListener('blur', blur);
   window.removeEventListener('pointerdown', outsideTextEditor, true);
 });
-defineExpose({ fit, zoom });
+defineExpose({ fit, focusLayer, zoom });
 </script>
 <template>
   <div
     ref="host"
     class="canvas-host"
+    :style="{
+      backgroundPosition: `${view.x}px ${view.y}px`,
+      backgroundSize: '16px 16px',
+    }"
     :class="{
       'is-panning': space || tool === 'hand' || pointerPanning,
       'is-panning-active': pointerPanning,
@@ -759,19 +931,59 @@ defineExpose({ fit, zoom });
             <v-rect
               :config="{
                 ...c,
+                id: 'candidate-' + c.id,
                 name: 'candidate',
-                stroke: c.enabled ? '#a3e600' : '#777',
-                strokeWidth: 2,
+                stroke: selectedCandidateId === c.id ? '#ffffff' : c.enabled ? '#a3e600' : '#777',
+                strokeWidth: selectedCandidateId === c.id ? 3 : 2,
                 strokeScaleEnabled: false,
                 fill: '#a3e60015',
                 draggable: !busy,
               }"
+              @mousedown="() => selectCandidate(c)"
+              @touchstart="() => selectCandidate(c)"
+              @click="() => selectCandidate(c)"
+              @tap="() => selectCandidate(c)"
+              @dragstart="() => selectCandidate(c)"
               @dragend="(e: any) => candidateEnd(e, c)"
             />
-            <v-label :config="{ x: c.x, y: c.y, listening: false }"
-              ><v-tag :config="{ fill: '#a3e600' }" /><v-text
-                :config="{ text: String(i + 1), fontSize: 16, padding: 4, fill: '#080808' }"
+            <v-label
+              :config="{ x: c.x, y: c.y, name: 'candidate', listening: true }"
+              @click="() => selectCandidate(c)"
+              @tap="() => selectCandidate(c)"
+              ><v-tag :config="{ name: 'candidate', fill: '#a3e600' }" /><v-text
+                :config="{
+                  name: 'candidate',
+                  text: String(i + 1),
+                  fontSize: 16,
+                  padding: 4,
+                  fill: '#080808',
+                }"
             /></v-label>
+          </template>
+          <template v-if="selectedCandidate && !busy">
+            <v-circle
+              v-for="key in candidateHandleKeys"
+              :key="key"
+              :config="{
+                ...candidateHandlePosition(selectedCandidate, key),
+                name: 'candidate',
+                radius:
+                  5 /
+                  (view.scale *
+                    Math.max(
+                      Math.abs(Number(overlay.scaleX) || 1),
+                      Math.abs(Number(overlay.scaleY) || 1),
+                    )),
+                fill: '#111111',
+                stroke: '#a3e600',
+                strokeWidth: 2,
+                strokeScaleEnabled: false,
+                draggable: true,
+              }"
+              @mousedown="() => selectCandidate(selectedCandidate)"
+              @dragmove="(event: any) => candidateHandleMove(event, selectedCandidate, key)"
+              @dragend="(event: any) => candidateHandleEnd(event, selectedCandidate, key)"
+            />
           </template>
         </v-group>
       </v-layer>
@@ -787,16 +999,97 @@ defineExpose({ fit, zoom });
       @input="resizeTextEditor"
       @keydown="textEditorKey"
     />
+    <button
+      v-if="selectedCandidate && !busy"
+      class="candidate-regenerate"
+      type="button"
+      :style="candidateRegenerateStyle"
+      aria-label="重新生成当前候选拆图"
+      @click.stop="regenerateCandidate"
+    >
+      重新生成
+    </button>
+    <button
+      v-if="
+        tool === 'select' &&
+        selectedImageLayer &&
+        localRegenerationAvailable &&
+        layerGeometryChanged
+      "
+      class="candidate-regenerate layer-regenerate"
+      type="button"
+      :style="layerRegenerateStyle"
+      :disabled="localRegenerationBusy"
+      :aria-busy="localRegenerationBusy"
+      :aria-label="localRegenerationBusy ? '正在重新生成当前图片图层' : '重新生成当前图片图层'"
+      :title="localRegenerationBusy ? '重新生成中…' : '重新生成'"
+      @click.stop="regenerateLocalLayer"
+    >
+      <el-icon :class="{ 'is-loading': localRegenerationBusy }" :size="17" aria-hidden="true">
+        <component :is="localRegenerationBusy ? Loading : Refresh" />
+      </el-icon>
+    </button>
     <div class="ruler ruler-top" aria-hidden="true">
+      <div
+        v-if="selectionBounds"
+        class="selection-ruler-range selection-ruler-range-x"
+        :style="{
+          left: view.x + selectionBounds.x * view.scale + 'px',
+          width: selectionBounds.width * view.scale + 'px',
+        }"
+      />
       <span v-for="t in rulerTicks.horizontal" :key="t.value" :style="{ left: t.pos + 'px' }">{{
         t.value
       }}</span>
+      <template v-if="selectionBounds">
+        <span
+          class="selection-ruler-marker selection-ruler-marker-x"
+          :style="{ left: view.x + selectionBounds.x * view.scale + 'px' }"
+          >{{ Math.round(selectionBounds.x) }}</span
+        ><span
+          class="selection-ruler-marker selection-ruler-marker-x"
+          :style="{
+            left: view.x + (selectionBounds.x + selectionBounds.width) * view.scale + 'px',
+          }"
+          >{{ Math.round(selectionBounds.x + selectionBounds.width) }}</span
+        >
+      </template>
     </div>
     <div class="ruler ruler-left" aria-hidden="true">
+      <div
+        v-if="selectionBounds"
+        class="selection-ruler-range selection-ruler-range-y"
+        :style="{
+          top: view.y + selectionBounds.y * view.scale + 'px',
+          height: selectionBounds.height * view.scale + 'px',
+        }"
+      />
       <span v-for="t in rulerTicks.vertical" :key="t.value" :style="{ top: t.pos + 'px' }">{{
         t.value
       }}</span>
+      <template v-if="selectionBounds">
+        <span
+          class="selection-ruler-marker selection-ruler-marker-y"
+          :style="{ top: view.y + selectionBounds.y * view.scale + 'px' }"
+          >{{ Math.round(selectionBounds.y) }}</span
+        ><span
+          class="selection-ruler-marker selection-ruler-marker-y"
+          :style="{
+            top: view.y + (selectionBounds.y + selectionBounds.height) * view.scale + 'px',
+          }"
+          >{{ Math.round(selectionBounds.y + selectionBounds.height) }}</span
+        >
+      </template>
     </div>
+    <span
+      v-if="selectionBounds"
+      class="selection-size-marker"
+      :style="{
+        left: view.x + (selectionBounds.x + selectionBounds.width / 2) * view.scale + 'px',
+        top: view.y + (selectionBounds.y + selectionBounds.height) * view.scale + 7 + 'px',
+      }"
+      >{{ Math.round(selectionBounds.width) }} × {{ Math.round(selectionBounds.height) }}</span
+    >
     <div v-if="!store.layers.length" class="canvas-empty">
       <span class="empty-cross">＋</span><strong>把图片放到这里</strong>
       <p>拖放、粘贴，或点击底部导入图片</p>

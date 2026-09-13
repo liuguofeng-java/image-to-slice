@@ -294,6 +294,28 @@
                                       "type": "number",
                                       "minimum": 0,
                                       "maximum": 8192
+                                    },
+                                    "renderIntent": {
+                                      "type": "object",
+                                      "properties": {
+                                        "alphaMode": {
+                                          "type": "string",
+                                          "enum": [
+                                            "opaque",
+                                            "cutout",
+                                            "translucent"
+                                          ]
+                                        },
+                                        "visualDescription": {
+                                          "type": "string",
+                                          "maxLength": 500
+                                        }
+                                      },
+                                      "required": [
+                                        "alphaMode",
+                                        "visualDescription"
+                                      ],
+                                      "additionalProperties": false
                                     }
                                   },
                                   "required": [
@@ -756,6 +778,28 @@
                                       "type": "number",
                                       "minimum": 0,
                                       "maximum": 8192
+                                    },
+                                    "renderIntent": {
+                                      "type": "object",
+                                      "properties": {
+                                        "alphaMode": {
+                                          "type": "string",
+                                          "enum": [
+                                            "opaque",
+                                            "cutout",
+                                            "translucent"
+                                          ]
+                                        },
+                                        "visualDescription": {
+                                          "type": "string",
+                                          "maxLength": 500
+                                        }
+                                      },
+                                      "required": [
+                                        "alphaMode",
+                                        "visualDescription"
+                                      ],
+                                      "additionalProperties": false
                                     }
                                   },
                                   "required": [
@@ -1213,6 +1257,28 @@
                                         "type": "number",
                                         "minimum": 0,
                                         "maximum": 8192
+                                      },
+                                      "renderIntent": {
+                                        "type": "object",
+                                        "properties": {
+                                          "alphaMode": {
+                                            "type": "string",
+                                            "enum": [
+                                              "opaque",
+                                              "cutout",
+                                              "translucent"
+                                            ]
+                                          },
+                                          "visualDescription": {
+                                            "type": "string",
+                                            "maxLength": 500
+                                          }
+                                        },
+                                        "required": [
+                                          "alphaMode",
+                                          "visualDescription"
+                                        ],
+                                        "additionalProperties": false
                                       }
                                     },
                                     "required": [
@@ -1629,6 +1695,28 @@
                                       "type": "number",
                                       "minimum": 0,
                                       "maximum": 8192
+                                    },
+                                    "renderIntent": {
+                                      "type": "object",
+                                      "properties": {
+                                        "alphaMode": {
+                                          "type": "string",
+                                          "enum": [
+                                            "opaque",
+                                            "cutout",
+                                            "translucent"
+                                          ]
+                                        },
+                                        "visualDescription": {
+                                          "type": "string",
+                                          "maxLength": 500
+                                        }
+                                      },
+                                      "required": [
+                                        "alphaMode",
+                                        "visualDescription"
+                                      ],
+                                      "additionalProperties": false
                                     }
                                   },
                                   "required": [
@@ -2123,6 +2211,21 @@
                             "model": {
                               "type": "string"
                             },
+                            "imageModel": {
+                              "type": "string"
+                            },
+                            "imageQuality": {
+                              "default": "max",
+                              "type": "string",
+                              "enum": [
+                                "auto",
+                                "low",
+                                "medium",
+                                "high",
+                                "xhigh",
+                                "max"
+                              ]
+                            },
                             "timeoutSeconds": {
                               "type": "number"
                             },
@@ -2133,6 +2236,7 @@
                           "required": [
                             "baseUrl",
                             "model",
+                            "imageQuality",
                             "timeoutSeconds",
                             "hasApiKey"
                           ],
@@ -2204,6 +2308,21 @@
                     "minLength": 1,
                     "maxLength": 200
                   },
+                  "imageModel": {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  "imageQuality": {
+                    "type": "string",
+                    "enum": [
+                      "auto",
+                      "low",
+                      "medium",
+                      "high",
+                      "xhigh",
+                      "max"
+                    ]
+                  },
                   "apiKey": {
                     "type": "string",
                     "maxLength": 8192
@@ -2244,6 +2363,21 @@
                             "model": {
                               "type": "string"
                             },
+                            "imageModel": {
+                              "type": "string"
+                            },
+                            "imageQuality": {
+                              "default": "max",
+                              "type": "string",
+                              "enum": [
+                                "auto",
+                                "low",
+                                "medium",
+                                "high",
+                                "xhigh",
+                                "max"
+                              ]
+                            },
                             "timeoutSeconds": {
                               "type": "number"
                             },
@@ -2254,6 +2388,7 @@
                           "required": [
                             "baseUrl",
                             "model",
+                            "imageQuality",
                             "timeoutSeconds",
                             "hasApiKey"
                           ],
@@ -2425,6 +2560,64 @@
         }
       }
     },
+    "/api/v1/model-configs/test-image": {
+      "post": {
+        "tags": [
+          "model-configs"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/split-jobs": {
       "post": {
         "tags": [
@@ -2507,7 +2700,13 @@
                       "pattern": "^[a-zA-Z0-9_-]{1,80}$"
                     },
                     "status": {
-                      "type": "string"
+                      "type": "string",
+                      "enum": [
+                        "running",
+                        "ready",
+                        "generating",
+                        "applied"
+                      ]
                     }
                   },
                   "required": [
@@ -2584,6 +2783,7 @@
                       "enum": [
                         "running",
                         "ready",
+                        "generating",
                         "failed",
                         "cancelled",
                         "applied"
@@ -2660,6 +2860,9 @@
                             ]
                           },
                           "enabled": {
+                            "type": "boolean"
+                          },
+                          "generate": {
                             "type": "boolean"
                           },
                           "text": {
@@ -2744,6 +2947,28 @@
                               "resizeMode"
                             ],
                             "additionalProperties": false
+                          },
+                          "renderIntent": {
+                            "type": "object",
+                            "properties": {
+                              "alphaMode": {
+                                "type": "string",
+                                "enum": [
+                                  "opaque",
+                                  "cutout",
+                                  "translucent"
+                                ]
+                              },
+                              "visualDescription": {
+                                "type": "string",
+                                "maxLength": 500
+                              }
+                            },
+                            "required": [
+                              "alphaMode",
+                              "visualDescription"
+                            ],
+                            "additionalProperties": false
                           }
                         },
                         "required": [
@@ -2758,6 +2983,72 @@
                         ],
                         "additionalProperties": false
                       }
+                    },
+                    "generation": {
+                      "type": "object",
+                      "properties": {
+                        "completed": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "total": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "failed": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "targets": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "status": {
+                                "type": "string",
+                                "enum": [
+                                  "pending",
+                                  "running",
+                                  "ready",
+                                  "failed"
+                                ]
+                              },
+                              "message": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "name",
+                              "status",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "completed",
+                        "total",
+                        "failed",
+                        "targets"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "resultRevision": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
                     }
                   },
                   "required": [
@@ -2871,7 +3162,7 @@
         }
       }
     },
-    "/api/v1/split-jobs/{id}/apply": {
+    "/api/v1/split-jobs/{id}/generate": {
       "post": {
         "tags": [
           "split-jobs"
@@ -2894,7 +3185,6 @@
                   },
                   "candidates": {
                     "minItems": 1,
-                    "maxItems": 200,
                     "type": "array",
                     "items": {
                       "type": "object",
@@ -2934,6 +3224,9 @@
                           ]
                         },
                         "enabled": {
+                          "type": "boolean"
+                        },
+                        "generate": {
                           "type": "boolean"
                         },
                         "text": {
@@ -3016,6 +3309,1225 @@
                             "lineHeight",
                             "letterSpacing",
                             "resizeMode"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "renderIntent": {
+                          "type": "object",
+                          "properties": {
+                            "alphaMode": {
+                              "type": "string",
+                              "enum": [
+                                "opaque",
+                                "cutout",
+                                "translucent"
+                              ]
+                            },
+                            "visualDescription": {
+                              "type": "string",
+                              "maxLength": 500
+                            }
+                          },
+                          "required": [
+                            "alphaMode",
+                            "visualDescription"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "x",
+                        "y",
+                        "width",
+                        "height",
+                        "id",
+                        "name",
+                        "category",
+                        "enabled"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "generateSource": {
+                    "default": true,
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "revision",
+                  "operationId",
+                  "candidates",
+                  "generateSource"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "running",
+                        "ready",
+                        "generating",
+                        "applied"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/layer-local-regeneration": {
+      "post": {
+        "tags": [
+          "layer-local-regeneration"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "projectId": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                  },
+                  "sceneId": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                  },
+                  "layerId": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                  },
+                  "revision": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "operationId": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                  }
+                },
+                "required": [
+                  "projectId",
+                  "sceneId",
+                  "layerId",
+                  "revision",
+                  "operationId"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "activeSceneId": {
+                      "type": "string",
+                      "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                    },
+                    "scenes": {
+                      "minItems": 1,
+                      "maxItems": 100,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                          },
+                          "name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 200
+                          },
+                          "width": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 16384
+                          },
+                          "height": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 16384
+                          },
+                          "layers": {
+                            "maxItems": 1000,
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "id": {
+                                      "type": "string",
+                                      "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                                    },
+                                    "name": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 200
+                                    },
+                                    "x": {
+                                      "type": "number",
+                                      "minimum": -1000000,
+                                      "maximum": 1000000
+                                    },
+                                    "y": {
+                                      "type": "number",
+                                      "minimum": -1000000,
+                                      "maximum": 1000000
+                                    },
+                                    "width": {
+                                      "type": "number",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 16384
+                                    },
+                                    "height": {
+                                      "type": "number",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 16384
+                                    },
+                                    "rotation": {
+                                      "type": "number",
+                                      "minimum": -36000,
+                                      "maximum": 36000
+                                    },
+                                    "flipX": {
+                                      "type": "boolean"
+                                    },
+                                    "flipY": {
+                                      "type": "boolean"
+                                    },
+                                    "opacity": {
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "maximum": 1
+                                    },
+                                    "locked": {
+                                      "type": "boolean"
+                                    },
+                                    "hidden": {
+                                      "type": "boolean"
+                                    },
+                                    "source": {
+                                      "type": "object",
+                                      "properties": {
+                                        "layerId": {
+                                          "type": "string",
+                                          "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                                        },
+                                        "rect": {
+                                          "type": "object",
+                                          "properties": {
+                                            "x": {
+                                              "type": "number"
+                                            },
+                                            "y": {
+                                              "type": "number"
+                                            },
+                                            "width": {
+                                              "type": "number",
+                                              "exclusiveMinimum": 0,
+                                              "maximum": 16384
+                                            },
+                                            "height": {
+                                              "type": "number",
+                                              "exclusiveMinimum": 0,
+                                              "maximum": 16384
+                                            }
+                                          },
+                                          "required": [
+                                            "x",
+                                            "y",
+                                            "width",
+                                            "height"
+                                          ],
+                                          "additionalProperties": false
+                                        }
+                                      },
+                                      "required": [
+                                        "layerId",
+                                        "rect"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    "type": {
+                                      "type": "string",
+                                      "enum": [
+                                        "image"
+                                      ]
+                                    },
+                                    "assetId": {
+                                      "type": "string",
+                                      "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                                    },
+                                    "radius": {
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "maximum": 8192
+                                    },
+                                    "renderIntent": {
+                                      "type": "object",
+                                      "properties": {
+                                        "alphaMode": {
+                                          "type": "string",
+                                          "enum": [
+                                            "opaque",
+                                            "cutout",
+                                            "translucent"
+                                          ]
+                                        },
+                                        "visualDescription": {
+                                          "type": "string",
+                                          "maxLength": 500
+                                        }
+                                      },
+                                      "required": [
+                                        "alphaMode",
+                                        "visualDescription"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  },
+                                  "required": [
+                                    "id",
+                                    "name",
+                                    "x",
+                                    "y",
+                                    "width",
+                                    "height",
+                                    "rotation",
+                                    "flipX",
+                                    "flipY",
+                                    "opacity",
+                                    "locked",
+                                    "hidden",
+                                    "type",
+                                    "assetId",
+                                    "radius"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "id": {
+                                      "type": "string",
+                                      "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                                    },
+                                    "name": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 200
+                                    },
+                                    "x": {
+                                      "type": "number",
+                                      "minimum": -1000000,
+                                      "maximum": 1000000
+                                    },
+                                    "y": {
+                                      "type": "number",
+                                      "minimum": -1000000,
+                                      "maximum": 1000000
+                                    },
+                                    "width": {
+                                      "type": "number",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 16384
+                                    },
+                                    "height": {
+                                      "type": "number",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 16384
+                                    },
+                                    "rotation": {
+                                      "type": "number",
+                                      "minimum": -36000,
+                                      "maximum": 36000
+                                    },
+                                    "flipX": {
+                                      "type": "boolean"
+                                    },
+                                    "flipY": {
+                                      "type": "boolean"
+                                    },
+                                    "opacity": {
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "maximum": 1
+                                    },
+                                    "locked": {
+                                      "type": "boolean"
+                                    },
+                                    "hidden": {
+                                      "type": "boolean"
+                                    },
+                                    "source": {
+                                      "type": "object",
+                                      "properties": {
+                                        "layerId": {
+                                          "type": "string",
+                                          "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                                        },
+                                        "rect": {
+                                          "type": "object",
+                                          "properties": {
+                                            "x": {
+                                              "type": "number"
+                                            },
+                                            "y": {
+                                              "type": "number"
+                                            },
+                                            "width": {
+                                              "type": "number",
+                                              "exclusiveMinimum": 0,
+                                              "maximum": 16384
+                                            },
+                                            "height": {
+                                              "type": "number",
+                                              "exclusiveMinimum": 0,
+                                              "maximum": 16384
+                                            }
+                                          },
+                                          "required": [
+                                            "x",
+                                            "y",
+                                            "width",
+                                            "height"
+                                          ],
+                                          "additionalProperties": false
+                                        }
+                                      },
+                                      "required": [
+                                        "layerId",
+                                        "rect"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    "type": {
+                                      "type": "string",
+                                      "enum": [
+                                        "text"
+                                      ]
+                                    },
+                                    "content": {
+                                      "type": "string",
+                                      "maxLength": 20000
+                                    },
+                                    "fontFamily": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 200
+                                    },
+                                    "fontSize": {
+                                      "type": "number",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 2048
+                                    },
+                                    "fontWeight": {
+                                      "type": "integer",
+                                      "minimum": 100,
+                                      "maximum": 900
+                                    },
+                                    "fontStyle": {
+                                      "type": "string",
+                                      "enum": [
+                                        "normal",
+                                        "italic"
+                                      ]
+                                    },
+                                    "fill": {
+                                      "type": "string",
+                                      "pattern": "^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$"
+                                    },
+                                    "align": {
+                                      "type": "string",
+                                      "enum": [
+                                        "left",
+                                        "center",
+                                        "right"
+                                      ]
+                                    },
+                                    "verticalAlign": {
+                                      "type": "string",
+                                      "enum": [
+                                        "top",
+                                        "middle",
+                                        "bottom"
+                                      ]
+                                    },
+                                    "lineHeight": {
+                                      "type": "number",
+                                      "minimum": 0.5,
+                                      "maximum": 5
+                                    },
+                                    "letterSpacing": {
+                                      "type": "number",
+                                      "minimum": -1000,
+                                      "maximum": 1000
+                                    },
+                                    "resizeMode": {
+                                      "type": "string",
+                                      "enum": [
+                                        "auto-width",
+                                        "auto-height",
+                                        "fixed"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "id",
+                                    "name",
+                                    "x",
+                                    "y",
+                                    "width",
+                                    "height",
+                                    "rotation",
+                                    "flipX",
+                                    "flipY",
+                                    "opacity",
+                                    "locked",
+                                    "hidden",
+                                    "type",
+                                    "content",
+                                    "fontFamily",
+                                    "fontSize",
+                                    "fontWeight",
+                                    "fontStyle",
+                                    "fill",
+                                    "align",
+                                    "verticalAlign",
+                                    "lineHeight",
+                                    "letterSpacing",
+                                    "resizeMode"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "width",
+                          "height",
+                          "layers"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "id": {
+                      "type": "string",
+                      "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "updatedAt": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "activeSceneId",
+                    "scenes",
+                    "id",
+                    "revision",
+                    "updatedAt"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/layer-regeneration-jobs": {
+      "post": {
+        "tags": [
+          "layer-regeneration-jobs"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "projectId": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                  },
+                  "sceneId": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                  },
+                  "layerId": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                  },
+                  "revision": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "operationId": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                  }
+                },
+                "required": [
+                  "projectId",
+                  "sceneId",
+                  "layerId",
+                  "revision",
+                  "operationId"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "generating",
+                        "failed",
+                        "cancelled",
+                        "applied"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/layer-regeneration-jobs/{id}": {
+      "get": {
+        "tags": [
+          "layer-regeneration-jobs"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "generating",
+                        "failed",
+                        "cancelled",
+                        "applied"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "generation": {
+                      "type": "object",
+                      "properties": {
+                        "completed": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "total": {
+                          "type": "number",
+                          "enum": [
+                            1
+                          ]
+                        },
+                        "failed": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "targets": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "status": {
+                                "type": "string",
+                                "enum": [
+                                  "pending",
+                                  "running",
+                                  "ready",
+                                  "failed"
+                                ]
+                              },
+                              "message": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "name",
+                              "status",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "completed",
+                        "total",
+                        "failed",
+                        "targets"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "resultRevision": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "status",
+                    "message",
+                    "generation"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "layer-regeneration-jobs"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/layer-regeneration-jobs/{id}/retry": {
+      "post": {
+        "tags": [
+          "layer-regeneration-jobs"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "generating",
+                        "failed",
+                        "cancelled",
+                        "applied"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/split-jobs/{id}/apply": {
+      "post": {
+        "tags": [
+          "split-jobs"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "revision": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "operationId": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                  },
+                  "candidates": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "x": {
+                          "type": "number"
+                        },
+                        "y": {
+                          "type": "number"
+                        },
+                        "width": {
+                          "type": "number",
+                          "exclusiveMinimum": 0,
+                          "maximum": 16384
+                        },
+                        "height": {
+                          "type": "number",
+                          "exclusiveMinimum": 0,
+                          "maximum": 16384
+                        },
+                        "id": {
+                          "type": "string",
+                          "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                        },
+                        "name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 200
+                        },
+                        "category": {
+                          "type": "string",
+                          "enum": [
+                            "image",
+                            "icon",
+                            "text",
+                            "background"
+                          ]
+                        },
+                        "enabled": {
+                          "type": "boolean"
+                        },
+                        "generate": {
+                          "type": "boolean"
+                        },
+                        "text": {
+                          "type": "object",
+                          "properties": {
+                            "content": {
+                              "type": "string",
+                              "maxLength": 20000
+                            },
+                            "fontFamily": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 200
+                            },
+                            "fontSize": {
+                              "type": "number",
+                              "exclusiveMinimum": 0,
+                              "maximum": 2048
+                            },
+                            "fontWeight": {
+                              "type": "integer",
+                              "minimum": 100,
+                              "maximum": 900
+                            },
+                            "fontStyle": {
+                              "type": "string",
+                              "enum": [
+                                "normal",
+                                "italic"
+                              ]
+                            },
+                            "fill": {
+                              "type": "string",
+                              "pattern": "^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$"
+                            },
+                            "align": {
+                              "type": "string",
+                              "enum": [
+                                "left",
+                                "center",
+                                "right"
+                              ]
+                            },
+                            "verticalAlign": {
+                              "type": "string",
+                              "enum": [
+                                "top",
+                                "middle",
+                                "bottom"
+                              ]
+                            },
+                            "lineHeight": {
+                              "type": "number",
+                              "minimum": 0.5,
+                              "maximum": 5
+                            },
+                            "letterSpacing": {
+                              "type": "number",
+                              "minimum": -1000,
+                              "maximum": 1000
+                            },
+                            "resizeMode": {
+                              "type": "string",
+                              "enum": [
+                                "auto-width",
+                                "auto-height",
+                                "fixed"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "content",
+                            "fontFamily",
+                            "fontSize",
+                            "fontWeight",
+                            "fontStyle",
+                            "fill",
+                            "align",
+                            "verticalAlign",
+                            "lineHeight",
+                            "letterSpacing",
+                            "resizeMode"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "renderIntent": {
+                          "type": "object",
+                          "properties": {
+                            "alphaMode": {
+                              "type": "string",
+                              "enum": [
+                                "opaque",
+                                "cutout",
+                                "translucent"
+                              ]
+                            },
+                            "visualDescription": {
+                              "type": "string",
+                              "maxLength": 500
+                            }
+                          },
+                          "required": [
+                            "alphaMode",
+                            "visualDescription"
                           ],
                           "additionalProperties": false
                         }
@@ -3212,6 +4724,28 @@
                                       "type": "number",
                                       "minimum": 0,
                                       "maximum": 8192
+                                    },
+                                    "renderIntent": {
+                                      "type": "object",
+                                      "properties": {
+                                        "alphaMode": {
+                                          "type": "string",
+                                          "enum": [
+                                            "opaque",
+                                            "cutout",
+                                            "translucent"
+                                          ]
+                                        },
+                                        "visualDescription": {
+                                          "type": "string",
+                                          "maxLength": 500
+                                        }
+                                      },
+                                      "required": [
+                                        "alphaMode",
+                                        "visualDescription"
+                                      ],
+                                      "additionalProperties": false
                                     }
                                   },
                                   "required": [

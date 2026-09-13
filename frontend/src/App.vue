@@ -20,11 +20,13 @@ import {
   Files,
   Check,
   EditPen,
+  ArrowDown,
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useEditor } from './store';
-import { api, download } from './api';
+import { api, download, imageUrl } from './api';
 import { useSplit } from './useSplit';
+import { useLayerRegeneration } from './useLayerRegeneration';
 import EditorCanvas from './components/EditorCanvas.vue';
 import LayerPanel from './components/LayerPanel.vue';
 import PropertiesPanel from './components/PropertiesPanel.vue';
@@ -34,6 +36,8 @@ import IconButton from './components/IconButton.vue';
 import type { Project } from './types';
 const store = useEditor(),
   split = useSplit(),
+  regeneration = useLayerRegeneration(),
+  regenerationPreview = ref<{ showPreview: () => void }>(),
   canvas = ref<InstanceType<typeof EditorCanvas>>(),
   input = ref<HTMLInputElement>(),
   tool = ref<'select' | 'hand' | 'text'>('select'),
@@ -250,7 +254,7 @@ function paste(e: ClipboardEvent) {
   }
 }
 function unload(e: BeforeUnloadEvent) {
-  if (store.dirty || store.saving || split.applying.value) {
+  if (store.dirty || store.saving || split.applying.value || regeneration.busy.value) {
     e.preventDefault();
     e.returnValue = '';
   }
@@ -261,6 +265,9 @@ watch(
     if (!active) tool.value = 'select';
   },
 );
+watch(modelOpen, (open) => {
+  if (!open) regeneration.refreshModel();
+});
 onMounted(() => {
   void initialize();
   window.addEventListener('keydown', key);
@@ -288,31 +295,45 @@ onBeforeUnmount(() => {
       :source="split.source.value"
       :region="split.region.value"
       :candidates="split.candidates.value"
+      :selected-candidate-id="split.selectedCandidateId.value"
       :busy="split.busy.value || split.applying.value"
+      :local-regeneration-busy="regeneration.busy.value"
+      :local-regeneration-available="regeneration.localEligible.value"
       @region="split.setRegion"
       @candidate="split.edit"
+      @select-candidate="split.selectCandidate"
+      @regenerate-candidate="split.regenerateCandidate"
+      @regenerate-local-layer="regeneration.startLocal"
       @zoom="zoom = $event"
       @error="report"
     />
     <header class="topbar">
       <div class="topbar-project floating-bar">
-        <span class="brand-mark" title="Slice Studio" aria-label="Slice Studio"
-          ><svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M6 3h15l-4 6H2Zm1 12h15l-4 6H3Z" fill="currentColor" /></svg></span
-        ><IconButton
-          label="打开项目"
-          :icon="Menu"
+        <button
+          class="project-switcher"
           :disabled="store.exclusive"
+          title="打开项目"
           @click="showProjects"
-        /><button
-          class="project-name"
-          :disabled="!store.project || store.exclusive"
-          title="重命名项目"
-          @click="renameProject"
         >
-          {{ store.project?.name || 'Slice Studio' }}</button
-        ><span class="bar-divider" /><el-dropdown trigger="click"
-          ><button class="zoom-menu" aria-label="画布缩放">{{ Math.round(zoom * 100) }}%⌄</button
+          <span class="project-switcher-icon"
+            ><el-icon><Menu /></el-icon
+          ></span>
+          <span class="project-switcher-copy">
+            <small>项目</small>
+            <strong>{{ store.project?.name || 'Slice Studio' }}</strong>
+          </span>
+          <el-icon class="project-switcher-chevron" aria-hidden="true"
+            ><ArrowDown
+          /></el-icon></button
+        ><IconButton
+          label="重命名项目"
+          :icon="EditPen"
+          :disabled="!store.project || store.exclusive"
+          @click="renameProject"
+        /><span class="bar-divider" /><el-dropdown trigger="click"
+          ><button class="zoom-menu" aria-label="画布缩放">
+            <span>缩放</span><strong>{{ Math.round(zoom * 100) }}%</strong
+            ><el-icon aria-hidden="true"><ArrowDown /></el-icon></button
           ><template #dropdown
             ><el-dropdown-menu
               ><el-dropdown-item @click="canvas?.fit()">适应画布</el-dropdown-item
@@ -368,13 +389,9 @@ onBeforeUnmount(() => {
       >
         <div class="panel-header">
           <strong>图层</strong
-          ><IconButton v-if="narrow" label="关闭图层面板" :icon="Close" @click="closeDrawer" /><span
-            v-else
-            class="panel-pin"
-            >⌖</span
-          >
+          ><IconButton v-if="narrow" label="关闭图层面板" :icon="Close" @click="closeDrawer" />
         </div>
-        <LayerPanel />
+        <LayerPanel @focus="canvas?.focusLayer" />
       </aside>
       <aside
         class="side-panel right-panel"
@@ -409,23 +426,107 @@ onBeforeUnmount(() => {
             @split="startSplit"
             @export="exportImages"
           /><template v-else
-            ><div v-if="!split.active.value" class="property-section">
-              <h2>AI 框选拆图</h2>
-              <p class="hint">选中一张可见、未锁定的图片，识别并裁切独立图层。</p>
-              <el-button
-                type="primary"
-                class="full-button"
-                :disabled="
-                  !store.single ||
-                  store.single.type !== 'image' ||
-                  store.single.hidden ||
-                  store.single.locked
-                "
-                @click="startSplit"
-                >进入框选</el-button
-              >
-              <p v-if="split.message.value" class="inline-message">{{ split.message.value }}</p>
-            </div>
+            ><template v-if="!split.active.value">
+              <section class="property-section single-regeneration">
+                <h2>单图 AI 重生成</h2>
+                <template v-if="regeneration.image.value && regeneration.asset.value">
+                  <div class="single-regeneration-preview">
+                    <el-image
+                      ref="regenerationPreview"
+                      class="image-preview-thumbnail"
+                      :src="imageUrl(regeneration.image.value.assetId)"
+                      :alt="`所选图片：${regeneration.image.value.name}`"
+                      :preview-src-list="[imageUrl(regeneration.image.value.assetId)]"
+                      preview-teleported
+                      hide-on-click-modal
+                      fit="contain"
+                      tabindex="0"
+                      role="button"
+                      :aria-label="`预览图片：${regeneration.image.value.name}`"
+                      @keydown.enter.prevent="regenerationPreview?.showPreview()"
+                      @keydown.space.prevent="regenerationPreview?.showPreview()"
+                    />
+                    <div>
+                      <strong>{{ regeneration.image.value.name }}</strong>
+                      <span
+                        >{{ regeneration.asset.value.width }} ×
+                        {{ regeneration.asset.value.height }} px</span
+                      >
+                    </div>
+                  </div>
+                  <div class="generation-summary compact-summary">
+                    <div>
+                      <span>图片生成模型</span><strong>{{ regeneration.imageModel.value }}</strong>
+                    </div>
+                    <div><span>预计调用</span><strong>1 次</strong></div>
+                  </div>
+                  <div
+                    v-if="regeneration.busy.value"
+                    class="generation-progress"
+                    role="status"
+                    aria-live="polite"
+                    aria-busy="true"
+                  >
+                    <div class="generation-progress-heading">
+                      <strong>正在重新生成</strong
+                      ><span>{{ regeneration.progress.value }} / 1</span>
+                    </div>
+                    <el-progress
+                      :percentage="regeneration.progress.value * 100"
+                      :show-text="false"
+                    />
+                    <el-button class="full-button" @click="regeneration.cancel">取消生成</el-button>
+                  </div>
+                  <el-button
+                    v-else-if="regeneration.failed.value"
+                    type="primary"
+                    class="full-button"
+                    @click="regeneration.retry"
+                    >重试</el-button
+                  ><el-button
+                    v-else
+                    type="primary"
+                    class="full-button"
+                    :disabled="
+                      !regeneration.eligible.value || regeneration.imageModel.value === '未配置'
+                    "
+                    @click="regeneration.start"
+                    >重新 AI 生成</el-button
+                  >
+                </template>
+                <p v-else class="hint">请选择一张图片。文字图层和多选不支持单图重生成。</p>
+                <p
+                  v-if="regeneration.image.value?.hidden || regeneration.image.value?.locked"
+                  class="hint"
+                >
+                  隐藏或锁定的图片不能重新生成。
+                </p>
+                <p
+                  v-if="regeneration.message.value"
+                  class="inline-message panel-message"
+                  role="status"
+                >
+                  {{ regeneration.message.value }}
+                </p>
+              </section>
+              <section class="property-section split-entry-section">
+                <h2>AI 框选拆图</h2>
+                <p class="hint">选中一张可见、未锁定的图片，识别并裁切独立图层。</p>
+                <el-button
+                  class="full-button"
+                  :disabled="
+                    !store.single ||
+                    store.single.type !== 'image' ||
+                    store.single.hidden ||
+                    store.single.locked ||
+                    store.exclusive
+                  "
+                  @click="startSplit"
+                  >进入框选</el-button
+                >
+                <p v-if="split.message.value" class="inline-message">{{ split.message.value }}</p>
+              </section>
+            </template>
             <SplitPanel v-else :controller="split"
           /></template>
         </div>

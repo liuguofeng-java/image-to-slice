@@ -1,4 +1,13 @@
-import type { Asset, Document, Project, ModelConfig, Rect, Candidate, Job } from './types';
+import type {
+  Asset,
+  Document,
+  Project,
+  ModelConfig,
+  Rect,
+  Candidate,
+  Job,
+  LayerRegenerationJob,
+} from './types';
 export const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:3002').replace(
   /\/$/,
   '',
@@ -47,6 +56,8 @@ export const api = {
     request<{ models: string[] }>('/api/v1/model-configs/models', 'POST', undefined, signal),
   test: (signal?: AbortSignal) =>
     request<{ status: string }>('/api/v1/model-configs/test', 'POST', undefined, signal),
+  testImage: (signal?: AbortSignal) =>
+    request<{ status: string }>('/api/v1/model-configs/test-image', 'POST', undefined, signal),
   split: (body: {
     projectId: string;
     sceneId: string;
@@ -62,6 +73,49 @@ export const api = {
       operationId,
       candidates,
     }),
+  generate: (
+    id: string,
+    revision: number,
+    operationId: string,
+    candidates: Candidate[],
+    generateSource: boolean,
+  ) =>
+    request<{ id: string; status: Job['status'] }>(
+      '/api/v1/split-jobs/' + id + '/generate',
+      'POST',
+      { revision, operationId, candidates, generateSource },
+    ),
+  regenerateLayer: (body: {
+    projectId: string;
+    sceneId: string;
+    layerId: string;
+    revision: number;
+    operationId: string;
+  }) =>
+    request<Pick<LayerRegenerationJob, 'id' | 'status'>>(
+      '/api/v1/layer-regeneration-jobs',
+      'POST',
+      body,
+    ),
+  localRegenerateLayer: (body: {
+    projectId: string;
+    sceneId: string;
+    layerId: string;
+    revision: number;
+    operationId: string;
+  }) => request<Project>('/api/v1/layer-local-regeneration', 'POST', body),
+  layerRegenerationJob: (id: string) =>
+    request<LayerRegenerationJob>('/api/v1/layer-regeneration-jobs/' + id),
+  retryLayerRegeneration: (id: string) =>
+    request<Pick<LayerRegenerationJob, 'id' | 'status'>>(
+      '/api/v1/layer-regeneration-jobs/' + id + '/retry',
+      'POST',
+    ),
+  cancelLayerRegeneration: (id: string) =>
+    request<{ status: LayerRegenerationJob['status'] }>(
+      '/api/v1/layer-regeneration-jobs/' + id,
+      'DELETE',
+    ),
 };
 export const imageUrl = (id: string) => API_BASE + '/api/v1/assets/' + id + '/image';
 export async function download(body: {

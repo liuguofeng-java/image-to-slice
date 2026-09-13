@@ -42,10 +42,16 @@ export const textStyleSchema = z.object({
   letterSpacing: z.number().finite().min(-1000).max(1000),
   resizeMode: z.enum(['auto-width', 'auto-height', 'fixed']),
 });
+export const renderIntentSchema = z.object({
+  alphaMode: z.enum(['opaque', 'cutout', 'translucent']),
+  visualDescription: z.string().trim().max(500),
+});
+export type RenderIntent = z.infer<typeof renderIntentSchema>;
 export const imageLayerSchema = layerBaseSchema.extend({
   type: z.literal('image'),
   assetId: idSchema,
   radius: z.number().min(0).max(8192),
+  renderIntent: renderIntentSchema.optional(),
 });
 export const textLayerSchema = layerBaseSchema.extend({
   type: z.literal('text'),
@@ -105,13 +111,17 @@ export const candidateSchema = rectSchema.extend({
   name: z.string().min(1).max(200),
   category: z.enum(['image', 'icon', 'text', 'background']),
   enabled: z.boolean(),
+  generate: z.boolean().optional(),
   text: textStyleSchema.optional(),
+  renderIntent: renderIntentSchema.optional(),
 });
 export type Candidate = z.infer<typeof candidateSchema>;
 export const modelSchema = z
   .object({
     baseUrl: z.string().url(),
     model: z.string().trim().min(1).max(200),
+    imageModel: z.string().trim().max(200).optional(),
+    imageQuality: z.enum(['auto', 'low', 'medium', 'high', 'xhigh', 'max']).optional(),
     apiKey: z.string().max(8192).optional(),
     timeoutSeconds: z.number().int().min(10).max(1800).default(120),
   })
@@ -145,6 +155,19 @@ export function point(l: ImageLayer, px: number, py: number, asset: Asset) {
     y: l.y + l.height / 2 + dx * Math.sin(r) + dy * Math.cos(r),
   };
 }
+
+/** 设计坐标转换回图片原像素；与 point 互为逆变换。 */
+export function sourcePoint(l: ImageLayer, asset: Asset, x: number, y: number) {
+  const r = (-l.rotation * Math.PI) / 180,
+    dx = x - l.x - l.width / 2,
+    dy = y - l.y - l.height / 2;
+  return {
+    x: (((dx * Math.cos(r) - dy * Math.sin(r)) * (l.flipX ? -1 : 1)) / l.width + 0.5) * asset.width,
+    y:
+      (((dx * Math.sin(r) + dy * Math.cos(r)) * (l.flipY ? -1 : 1)) / l.height + 0.5) *
+      asset.height,
+  };
+}
 export function croppedLayer(
   source: ImageLayer,
   asset: Asset,
@@ -165,6 +188,7 @@ export function croppedLayer(
     width,
     height,
     radius: 0,
+    ...(c.renderIntent ? { renderIntent: c.renderIntent } : {}),
     source: { layerId: source.id, rect: { x: c.x, y: c.y, width: c.width, height: c.height } },
   };
 }

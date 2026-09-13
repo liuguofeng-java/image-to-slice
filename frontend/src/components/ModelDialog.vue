@@ -7,6 +7,8 @@ const open = defineModel<boolean>({ required: true });
 const form = reactive<ModelConfig>({
     baseUrl: 'http://localhost:8080',
     model: '',
+    imageModel: '',
+    imageQuality: 'max',
     timeoutSeconds: 120,
     apiKey: '',
   }),
@@ -25,6 +27,15 @@ watch(open, async (value) => {
   }
   const token = ++epoch;
   message.value = '';
+  Object.assign(form, {
+    baseUrl: 'http://localhost:8080',
+    model: '',
+    imageModel: '',
+    imageQuality: 'max',
+    timeoutSeconds: 120,
+    apiKey: '',
+  });
+  hasKey.value = false;
   try {
     const result = await api.config();
     if (token !== epoch) return;
@@ -40,6 +51,8 @@ async function save() {
   const c = {
     baseUrl: form.baseUrl.trim(),
     model: form.model.trim() || '待选择',
+    imageModel: form.imageModel?.trim() || undefined,
+    imageQuality: form.imageQuality || 'max',
     timeoutSeconds: form.timeoutSeconds,
     ...(form.apiKey ? { apiKey: form.apiKey } : {}),
   };
@@ -49,12 +62,15 @@ async function save() {
 }
 async function action(kind: string) {
   if (busy.value) return;
-  if (kind === 'test') {
+  if (kind === 'test' || kind === 'test-image') {
     try {
-      await ElMessageBox.confirm('发送一张测试图片到远程图片理解 API，可能产生费用。', '测试模型', {
-        confirmButtonText: '发送测试',
-        cancelButtonText: '取消',
-      });
+      await ElMessageBox.confirm(
+        kind === 'test'
+          ? '发送一张测试图片到远程图片理解 API，可能产生费用。'
+          : `调用图片生成模型「${form.imageModel}」生成一张测试图，可能产生费用且不会自动重试。`,
+        kind === 'test' ? '测试图片理解' : '测试图片生成',
+        { confirmButtonText: '发送测试', cancelButtonText: '取消' },
+      );
     } catch {
       return;
     }
@@ -72,6 +88,9 @@ async function action(kind: string) {
     } else if (kind === 'test') {
       await api.test(controller.signal);
       message.value = '测试成功，模型可以接收图片并返回内容。';
+    } else if (kind === 'test-image') {
+      await api.testImage(controller.signal);
+      message.value = '测试成功，图片生成模型可以完成遮罩编辑。';
     } else message.value = '设置已保存。';
   } catch (e) {
     if (token === epoch)
@@ -85,7 +104,7 @@ onBeforeUnmount(() => controller?.abort());
 <template>
   <el-dialog
     v-model="open"
-    title="图片理解模型设置"
+    title="AI 模型设置"
     width="480px"
     align-center
     :close-on-click-modal="false"
@@ -116,6 +135,31 @@ onBeforeUnmount(() => controller?.abort());
             :key="m"
             :label="m"
             :value="m" /></el-select></el-form-item
+      ><el-form-item label="图片生成模型"
+        ><el-select
+          v-model="form.imageModel"
+          filterable
+          allow-create
+          default-first-option
+          placeholder="输入或从模型列表选择，例如 gpt-image-2.5"
+          :disabled="!!busy"
+          ><el-option
+            v-for="m in models"
+            :key="'image-' + m"
+            :label="m"
+            :value="m" /></el-select></el-form-item
+      ><el-form-item label="图片生成质量"
+        ><el-select v-model="form.imageQuality" aria-label="图片生成质量" :disabled="!!busy">
+          <el-option label="自动" value="auto" />
+          <el-option label="低" value="low" />
+          <el-option label="中" value="medium" />
+          <el-option label="高" value="high" />
+          <el-option label="超高" value="xhigh" />
+          <el-option label="最高" value="max" />
+        </el-select>
+        <p class="hint">
+          质量越高，透明边缘和材质细节通常越好，费用和等待时间也会增加。
+        </p></el-form-item
       ><el-form-item label="请求超时（秒）"
         ><el-input-number
           v-model="form.timeoutSeconds"
@@ -131,6 +175,11 @@ onBeforeUnmount(() => controller?.abort());
         :disabled="!!busy || !form.model"
         @click="action('test')"
         >测试图片理解</el-button
+      ><el-button
+        :loading="busy === 'test-image'"
+        :disabled="!!busy || !form.imageModel"
+        @click="action('test-image')"
+        >测试图片生成</el-button
       >
     </div>
     <p v-if="message" class="inline-message" role="status">{{ message }}</p>

@@ -25,6 +25,7 @@ const store = useEditor(),
   dragged = ref(''),
   focused = ref(''),
   collapsedByScene = ref<Record<string, string[]>>({});
+const emit = defineEmits<{ focus: [id: string] }>();
 
 interface TreeRow {
   node: LayerTreeNode;
@@ -136,6 +137,7 @@ function focusRow(id: string) {
 function selectLayer(id: string, event: MouseEvent | KeyboardEvent) {
   store.select(id, event.shiftKey || event.ctrlKey || event.metaKey);
   focused.value = id;
+  emit('focus', id);
 }
 function navigate(event: KeyboardEvent, row: TreeRow) {
   const index = rows.value.findIndex((item) => item.node.layer.id === row.node.layer.id),

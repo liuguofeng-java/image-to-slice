@@ -2,6 +2,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import sharp from 'sharp';
 import { createApp } from '../src/app.js';
 const dir = await mkdtemp(join(tmpdir(), 'slice-studio-e2e-'));
 const { app, storage } = await createApp({
@@ -36,6 +37,14 @@ const { app, storage } = await createApp({
       },
     ];
   },
+  imageEditor: async (_config, input, signal) => {
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    if (signal.aborted) throw new Error('cancelled');
+    const [width, height] = input.size.split('x').map(Number);
+    return sharp({ create: { width, height, channels: 4, background: '#54705f' } })
+      .png()
+      .toBuffer();
+  },
   fetcher: async (_url, options) =>
     new Response(
       JSON.stringify(
@@ -49,6 +58,7 @@ const { app, storage } = await createApp({
 await storage.saveModel({
   baseUrl: 'http://localhost:9999',
   model: 'mock-vision',
+  imageModel: 'mock-image',
   timeoutSeconds: 120,
   apiKey: 'e2e-only-not-a-real-secret',
 });

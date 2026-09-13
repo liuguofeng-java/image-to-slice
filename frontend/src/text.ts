@@ -28,7 +28,8 @@ export const defaultTextStyle = (content = ''): TextStyle => ({
   fontSize: 24,
   fontWeight: 400,
   fontStyle: 'normal',
-  fill: '#000000',
+  // 画布是深色背景，默认使用高对比浅色；用户仍可通过颜色选择器改成其他颜色。
+  fill: '#ededed',
   align: 'left',
   verticalAlign: 'top',
   lineHeight: 1.2,
